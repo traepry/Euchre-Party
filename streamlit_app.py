@@ -2,7 +2,6 @@ import math
 from itertools import combinations
 
 import streamlit as st
-from ortools.sat.python import cp_model
 
 st.set_page_config(page_title="Euchre Tournament Scheduler", layout="wide")
 
@@ -67,14 +66,14 @@ def generate_partner_rounds(players: list[str]) -> list[dict]:
             "bye": bye
         })
 
-        # Rotate all but first
+        # rotate all but first
         arr = [arr[0]] + [arr[-1]] + arr[1:-1]
 
     return rounds
 
 
 # =========================================================
-# Helpers: exact opponent solver
+# Helpers: exact small-case solver
 # =========================================================
 
 def pair_key(a: str, b: str) -> tuple[str, str]:
@@ -87,6 +86,7 @@ def opponent_target(players: list[str], partner_rounds: list[dict]) -> float:
     total_opponent_pair_events = 0
 
     for rnd in partner_rounds:
+        # each table contributes 4 opponent pair-events
         table_count = len(rnd["pairs"]) // 2
         total_opponent_pair_events += table_count * 4
 
@@ -98,7 +98,9 @@ def opponent_low_high(players: list[str], partner_rounds: list[dict]) -> tuple[i
     return math.floor(target), math.ceil(target), target
 
 
-def all_table_pairings_even(teams: list[tuple[str, str]]) -> list[list[tuple[tuple[str, str], tuple[str, str]]]]:
+def all_table_pairings_even(
+    teams: list[tuple[str, str]]
+) -> list[list[tuple[tuple[str, str], tuple[str, str]]]]:
     """
     Return all ways to pair an even number of teams into tables.
     Example:
@@ -124,28 +126,34 @@ def all_table_pairings_even(teams: list[tuple[str, str]]) -> list[list[tuple[tup
     return results
 
 
-def layout_opponent_pairs(
-    tables: list[tuple[tuple[str, str], tuple[str, str]]]
-) -> set[tuple[str, str]]:
-    """Return the set of player-pairs who oppose each other in this layout."""
-    opposed = set()
-
+def apply_tables_to_opp_counts(opp_counts: dict, tables: list) -> None:
+    """
+    Update opponent counts from a list of tables.
+    Each table is ((a,b), (c,d)).
+    """
     for team1, team2 in tables:
         a, b = team1
         c, d = team2
-        opposed.add(pair_key(a, c))
-        opposed.add(pair_key(a, d))
-        opposed.add(pair_key(b, c))
-        opposed.add(pair_key(b, d))
-
-    return opposed
+        for x in (a, b):
+            for y in (c, d):
+                opp_counts[x][y] += 1
+                opp_counts[y][x] += 1
 
 
-def copy_opp_counts(opp_counts):
+def copy_opp_counts(opp_counts: dict) -> dict:
     return {p: opp_counts[p].copy() for p in opp_counts}
 
 
-def exact_score_from_counts(players, opp_counts, target):
+def exact_score_from_counts(players: list[str], opp_counts: dict, target: int):
+    """
+    Lower is better.
+    For exact-feasible cases, perfect output should be:
+      max_dev = 0
+      sse = 0
+      spread = 0
+      zeros = 0
+      above = 0
+    """
     vals = []
     for i in range(len(players)):
         for j in range(i + 1, len(players)):
@@ -162,10 +170,15 @@ def exact_score_from_counts(players, opp_counts, target):
     return (max_dev, sse, spread, zeros, above)
 
 
-def all_round_layouts_small(teams):
+def all_round_layouts_small(teams: list[tuple[str, str]]) -> list[dict]:
     """
-    Exact layouts for one round.
+    All valid layouts for one round.
     If odd number of teams, one team sits out.
+    Output format:
+      {
+        "tables": [...],
+        "sit_out_team": [...]
+      }
     """
     layouts = []
 
@@ -190,15 +203,22 @@ def all_round_layouts_small(teams):
 
 def build_schedule_exact_small(players: list[str]) -> list[dict]:
     """
-    Exact backtracking search for small cases like 8 and 9 players.
-    Much faster on Streamlit Cloud than CP-SAT for these sizes.
+    Exact backtracking search for small exact-feasible cases.
+    Intended for:
+      4, 5, 8, 9 players
     """
+    n = len(players)
+    if n not in (4, 5, 8, 9):
+        raise ValueError(
+            "This exact small solver currently supports 4, 5, 8, or 9 players."
+        )
+
     partner_rounds = generate_partner_rounds(players)
     target = opponent_target(players, partner_rounds)
 
     if abs(target - round(target)) > 1e-9:
         raise ValueError(
-            f"Exact equal opponent counts are impossible for {len(players)} players because "
+            f"Exact equal opponent counts are impossible for {n} players because "
             f"the ideal average opponent count is {target:.4f}, not an integer."
         )
 
@@ -215,7 +235,7 @@ def build_schedule_exact_small(players: list[str]) -> list[dict]:
     best_score = None
     best_layouts = None
 
-    def search(round_idx, opp_counts, chosen_layouts):
+    def search(round_idx: int, opp_counts: dict, chosen_layouts: list[dict]):
         nonlocal best_score, best_layouts
 
         if round_idx == len(layouts_by_round):
@@ -269,32 +289,21 @@ def build_schedule_exact_small(players: list[str]) -> list[dict]:
     return schedule
 
 
-def build_schedule(players: list[str], time_limit_seconds: int = 120) -> list[dict]:
+def build_schedule(players: list[str]) -> list[dict]:
     """
-    Exact-only schedule builder.
-    Uses specialized exact search for small sizes.
-    Uses CP-SAT for larger exact-feasible sizes up to 20.
+    Exact-only schedule builder for reliable small cases.
     """
     n = len(players)
 
     if n < 4:
         raise ValueError("You need at least 4 players.")
 
-    if n > 20:
-        raise ValueError("This version is configured only for exact schedules up to 20 players.")
-
-    if n % 4 not in (0, 1):
+    if n not in (4, 5, 8, 9):
         raise ValueError(
-            f"Exact equal opponent counts are impossible for {n} players under your rules. "
-            f"Use 4, 5, 8, 9, 12, 13, 16, 17, or 20 players for exact schedules."
+            "This version currently supports exact schedules for 4, 5, 8, or 9 players only."
         )
 
-    # Fast exact search for small cases
-    if n <= 9:
-        return build_schedule_exact_small(players)
-
-    # CP-SAT for larger exact-feasible cases
-    return build_schedule_exact(players, time_limit_seconds=time_limit_seconds)
+    return build_schedule_exact_small(players)
 
 
 # =========================================================
@@ -346,13 +355,7 @@ def opponent_balance_report(players: list[str], schedule: list[dict]) -> list[tu
     return rows
 
 
-def final_opponent_score_exact(
-    players: list[str], opp_counts: dict, target: float
-) -> tuple[float, float, int, int, int]:
-    """
-    Score summary for the exact case.
-    Lower is better.
-    """
+def final_opponent_score_exact(players: list[str], opp_counts: dict, target: float):
     vals = []
     for i in range(len(players)):
         for j in range(i + 1, len(players)):
@@ -401,7 +404,7 @@ def generate_tournament(names_text: str):
 
     try:
         st.session_state.players = players
-        st.session_state.schedule = build_schedule(players, time_limit_seconds=120)
+        st.session_state.schedule = build_schedule(players)
         st.session_state.current_round = 0
         st.session_state.generated = True
         st.session_state.error = ""
@@ -453,10 +456,9 @@ st.markdown(
 Paste one player name per line, generate the tournament once, and use the round buttons
 to move through the schedule.
 
-This version uses an exact solver for **20 or fewer players** when exact equal opponent
-counts are mathematically possible. Valid exact player counts are:
+This version currently supports **exact schedules** for:
 
-**4, 5, 8, 9, 12, 13, 16, 17, 20**
+**4, 5, 8, 9 players**
 """
 )
 
@@ -544,7 +546,8 @@ if st.session_state.generated and st.session_state.schedule:
     with st.expander("Validation / stats"):
         partner_counts = partner_summary(players, schedule)
         opp_counts = opponent_summary(players, schedule)
-        opp_low, opp_high, opp_target = opponent_low_high(players, generate_partner_rounds(players))
+        partner_rounds = generate_partner_rounds(players)
+        opp_low, opp_high, opp_target = opponent_low_high(players, partner_rounds)
         opp_score = final_opponent_score_exact(players, opp_counts, opp_target)
 
         sits = count_sitouts(schedule)
