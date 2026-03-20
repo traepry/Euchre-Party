@@ -1,8 +1,8 @@
 import math
-import random
 from itertools import combinations
 
 import streamlit as st
+from ortools.sat.python import cp_model
 
 st.set_page_config(page_title="Euchre Tournament Scheduler", layout="wide")
 
@@ -67,34 +67,22 @@ def generate_partner_rounds(players: list[str]) -> list[dict]:
             "bye": bye
         })
 
-        # rotate all but first
+        # Rotate all but first
         arr = [arr[0]] + [arr[-1]] + arr[1:-1]
 
     return rounds
 
 
 # =========================================================
-# Helpers: opponent counts
+# Helpers: exact opponent solver
 # =========================================================
 
-def make_empty_opp_counts(players):
-    return {p: {q: 0 for q in players if q != p} for p in players}
+def pair_key(a: str, b: str) -> tuple[str, str]:
+    return tuple(sorted((a, b)))
 
 
-def apply_tables_to_opp_counts(opp_counts, tables):
-    for team1, team2 in tables:
-        a, b = team1
-        c, d = team2
-        for x in (a, b):
-            for y in (c, d):
-                opp_counts[x][y] += 1
-                opp_counts[y][x] += 1
-
-
-def opponent_target(players, partner_rounds):
-    """
-    Average ideal opponent count per player pair.
-    """
+def opponent_target(players: list[str], partner_rounds: list[dict]) -> float:
+    """Average ideal opponent count per player pair."""
     total_pairs = math.comb(len(players), 2)
     total_opponent_pair_events = 0
 
@@ -105,261 +93,223 @@ def opponent_target(players, partner_rounds):
     return total_opponent_pair_events / total_pairs
 
 
-def opponent_low_high(players, partner_rounds):
+def opponent_low_high(players: list[str], partner_rounds: list[dict]) -> tuple[int, int, float]:
     target = opponent_target(players, partner_rounds)
     return math.floor(target), math.ceil(target), target
 
 
-def edge_penalty(c, low, high):
+def all_table_pairings_even(teams: list[tuple[str, str]]) -> list[list[tuple[tuple[str, str], tuple[str, str]]]]:
     """
-    Penalty for final opponent count c.
-    We want counts to fall in [low, high] whenever possible.
+    Return all ways to pair an even number of teams into tables.
+    Example:
+      [T1,T2,T3,T4] ->
+      [
+        [(T1,T2),(T3,T4)],
+        [(T1,T3),(T2,T4)],
+        [(T1,T4),(T2,T3)]
+      ]
     """
-    if c < low:
-        return 1000 * (low - c) ** 2
-    if c > high:
-        return 3000 * (c - high) ** 2
-    mid = (low + high) / 2.0
-    return (c - mid) ** 2
+    if not teams:
+        return [[]]
+
+    first = teams[0]
+    results = []
+
+    for i in range(1, len(teams)):
+        second = teams[i]
+        remaining = teams[1:i] + teams[i + 1:]
+        for rest in all_table_pairings_even(remaining):
+            results.append([(first, second)] + rest)
+
+    return results
 
 
-def incremental_match_cost(team_a, team_b, opp_counts, low, high):
+def layout_opponent_pairs(
+    tables: list[tuple[tuple[str, str], tuple[str, str]]]
+) -> set[tuple[str, str]]:
+    """Return the set of player-pairs who oppose each other in this layout."""
+    opposed = set()
+
+    for team1, team2 in tables:
+        a, b = team1
+        c, d = team2
+        opposed.add(pair_key(a, c))
+        opposed.add(pair_key(a, d))
+        opposed.add(pair_key(b, c))
+        opposed.add(pair_key(b, d))
+
+    return opposed
+
+
+def build_schedule_exact(players: list[str], time_limit_seconds: int = 120) -> list[dict]:
     """
-    Cost of making team_a play against team_b right now.
-    Lower is better.
-    """
-    a1, a2 = team_a
-    b1, b2 = team_b
+    Exact opponent-balancing schedule for n <= 20 when exact equality is mathematically feasible.
 
-    cost = 0
-    for x in (a1, a2):
-        for y in (b1, b2):
-            before = opp_counts[x][y]
-            after = before + 1
-            cost += edge_penalty(after, low, high) - edge_penalty(before, low, high)
-
-    return cost
-
-
-# =========================================================
-# Helpers: sit-out balancing
-# =========================================================
-
-def compute_sitout_targets(players, partner_rounds, rng):
-    """
-    Compute the mathematically best possible sit-out totals per player.
-
-    Final sit-out counts must differ by at most 1.
-    Example for 30 players:
-      total sit-outs = 58
-      low = 1, high = 2
-      exactly 28 players get 2
-      exactly 2 players get 1
-
-    Also respects mandatory BYEs from odd-player schedules.
+    Exact equality is feasible when n % 4 is 0 or 1.
+    Supported practical range here: n <= 20.
     """
     n = len(players)
-    mandatory = {p: 0 for p in players}
-    total_slots = 0
+
+    if n > 20:
+        raise ValueError("Exact solver is only enabled for 20 or fewer players.")
+
+    if n % 4 not in (0, 1):
+        raise ValueError(
+            f"Exact equal opponent counts are mathematically impossible for {n} players "
+            f"under your rules. Exact works when n % 4 is 0 or 1."
+        )
+
+    partner_rounds = generate_partner_rounds(players)
+    low, high, target = opponent_low_high(players, partner_rounds)
+
+    if abs(target - round(target)) > 1e-9:
+        raise ValueError(
+            f"Exact equal opponent counts are impossible for {n} players because "
+            f"the ideal average opponent count is {target:.4f}, not an integer."
+        )
+
+    target = int(round(target))
+
+    layouts_by_round = []
+    layout_opp_pairs_by_round = []
 
     for rnd in partner_rounds:
-        round_slots = 0
+        teams = [tuple(pair) for pair in rnd["pairs"]]
 
-        if rnd["bye"] is not None:
-            mandatory[rnd["bye"]] += 1
-            round_slots += 1
+        if len(teams) % 2 != 0:
+            raise ValueError(
+                "This player count requires team sit-outs inside rounds, so exact equal "
+                "opponent counts are not supported in this version."
+            )
 
-        if len(rnd["pairs"]) % 2 == 1:
-            round_slots += 2  # one partner-team sits out
+        layouts = all_table_pairings_even(teams)
+        layouts_by_round.append(layouts)
+        layout_opp_pairs_by_round.append([layout_opponent_pairs(tables) for tables in layouts])
 
-        total_slots += round_slots
+    model = cp_model.CpModel()
 
-    low = total_slots // n
-    high = low + (1 if total_slots % n else 0)
-    num_high = total_slots - low * n
+    # x[(r, l)] = 1 if layout l is chosen in round r
+    x = {}
+    for r, layouts in enumerate(layouts_by_round):
+        for l in range(len(layouts)):
+            x[(r, l)] = model.NewBoolVar(f"x_r{r}_l{l}")
 
-    # Everyone starts at the lower target
-    targets = {p: low for p in players}
+    # Choose exactly one layout per round
+    for r, layouts in enumerate(layouts_by_round):
+        model.Add(sum(x[(r, l)] for l in range(len(layouts))) == 1)
 
-    # Anyone whose mandatory count exceeds low must be in the high bucket
-    required_high = [p for p in players if mandatory[p] > low]
-    required_high = list(dict.fromkeys(required_high))
+    # Every player-pair must oppose exactly target times
+    all_pairs = [pair_key(players[i], players[j]) for i in range(n) for j in range(i + 1, n)]
 
-    if len(required_high) > num_high:
-        # Fallback: force minimum feasible target profile
-        for p in players:
-            targets[p] = max(low, mandatory[p])
-        return targets, low, high, total_slots
+    for wanted in all_pairs:
+        terms = []
+        for r, layouts in enumerate(layouts_by_round):
+            for l in range(len(layouts)):
+                if wanted in layout_opp_pairs_by_round[r][l]:
+                    terms.append(x[(r, l)])
+        model.Add(sum(terms) == target)
 
-    chosen_high = set(required_high)
-    remaining = [p for p in players if p not in chosen_high]
-    rng.shuffle(remaining)
+    # Mild symmetry breaking
+    model.Add(x[(0, 0)] == 1)
 
-    for p in remaining[:max(0, num_high - len(chosen_high))]:
-        chosen_high.add(p)
+    solver = cp_model.CpSolver()
+    solver.parameters.max_time_in_seconds = time_limit_seconds
+    solver.parameters.num_search_workers = 8
 
-    for p in chosen_high:
-        targets[p] = high
+    status = solver.Solve(model)
 
-    # Ensure mandatory constraints are satisfied
-    for p in players:
-        if targets[p] < mandatory[p]:
-            targets[p] = mandatory[p]
+    if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        raise ValueError(
+            "The exact solver did not find a schedule in time. "
+            "Try increasing time_limit_seconds or using fewer players."
+        )
 
-    return targets, low, high, total_slots
+    schedule = []
+
+    for round_index, rnd in enumerate(partner_rounds, start=1):
+        chosen_tables = None
+
+        for l, candidate in enumerate(layouts_by_round[round_index - 1]):
+            if solver.Value(x[(round_index - 1, l)]) == 1:
+                chosen_tables = candidate
+                break
+
+        if chosen_tables is None:
+            raise RuntimeError("Solver returned no selected layout for a round.")
+
+        teams = [tuple(pair) for pair in rnd["pairs"]]
+        bye = rnd["bye"]
+
+        sit_out_players = []
+        if bye is not None:
+            sit_out_players.append(bye)
+
+        round_data = {
+            "round_number": round_index,
+            "partner_pairs": [list(pair) for pair in teams],
+            "bye": bye,
+            "sit_out_team": [],
+            "sit_out": sit_out_players,
+            "tables": []
+        }
+
+        for table_num, (team1, team2) in enumerate(chosen_tables, start=1):
+            round_data["tables"].append({
+                "table": table_num,
+                "team1": list(team1),
+                "team2": list(team2)
+            })
+
+        schedule.append(round_data)
+
+    return schedule
 
 
-def choose_sitout_team(teams, sit_counts, sit_targets, rng):
+def build_schedule(players: list[str], time_limit_seconds: int = 120) -> list[dict]:
     """
-    Choose one partner-team to sit out this round.
+    Exact-only schedule builder for 20 or fewer players.
 
-    Priority:
-    1) Do not exceed final sit-out targets if possible
-    2) Give sit-outs to players furthest below target
-    3) Keep total sit-outs balanced
+    Exact equal opponent counts are possible only when n % 4 is 0 or 1.
     """
-    scored = []
+    n = len(players)
 
-    for team in teams:
-        a, b = team
-        after_a = sit_counts[a] + 1
-        after_b = sit_counts[b] + 1
+    if n < 4:
+        raise ValueError("You need at least 4 players.")
 
-        over_target = max(0, after_a - sit_targets[a]) + max(0, after_b - sit_targets[b])
-        remaining_deficit = max(0, sit_targets[a] - after_a) + max(0, sit_targets[b] - after_b)
-        current_total = sit_counts[a] + sit_counts[b]
+    if n > 20:
+        raise ValueError("This version is configured only for exact schedules up to 20 players.")
 
-        scored.append((over_target, remaining_deficit, current_total, rng.random(), team))
+    if n % 4 not in (0, 1):
+        raise ValueError(
+            f"Exact equal opponent counts are impossible for {n} players under your rules. "
+            f"Use 4, 5, 8, 9, 12, 13, 16, 17, or 20 players for exact schedules."
+        )
 
-    scored.sort(key=lambda x: (x[0], x[1], x[2], x[3]))
-    shortlist = scored[:min(4, len(scored))]
-    return rng.choice(shortlist)[4]
+    return build_schedule_exact(players, time_limit_seconds=time_limit_seconds)
 
 
-def count_sitouts(schedule):
-    sit = {}
+# =========================================================
+# Helpers: stats / validation
+# =========================================================
+
+def partner_summary(players: list[str], schedule: list[dict]) -> dict:
+    """
+    Count partnerships using the partner pair list.
+    """
+    counts = {p: {q: 0 for q in players if q != p} for p in players}
+
     for rnd in schedule:
-        for p in rnd["sit_out"]:
-            sit[p] = sit.get(p, 0) + 1
-    return sit
+        for a, b in rnd["partner_pairs"]:
+            counts[a][b] += 1
+            counts[b][a] += 1
+
+    return counts
 
 
-# =========================================================
-# Helpers: round construction
-# =========================================================
-
-def greedy_pair_tables(teams, opp_counts, low, high, rng):
+def opponent_summary(players: list[str], schedule: list[dict]) -> dict:
     """
-    Randomized greedy pairing of partner-teams into tables.
+    Count how many times each player-pair opposed one another.
     """
-    remaining = teams[:]
-    tables = []
-
-    while remaining:
-        # choose the most constrained team first
-        team_scores = []
-        for i, team_a in enumerate(remaining):
-            candidate_costs = []
-            for j, team_b in enumerate(remaining):
-                if i == j:
-                    continue
-                candidate_costs.append(
-                    incremental_match_cost(team_a, team_b, opp_counts, low, high)
-                )
-
-            if candidate_costs:
-                team_scores.append((min(candidate_costs), rng.random(), i))
-
-        team_scores.sort(reverse=True)
-        _, _, idx_a = team_scores[0]
-        team_a = remaining.pop(idx_a)
-
-        match_options = []
-        for j, team_b in enumerate(remaining):
-            cost = incremental_match_cost(team_a, team_b, opp_counts, low, high)
-            match_options.append((cost, rng.random(), j, team_b))
-
-        match_options.sort(key=lambda x: (x[0], x[1]))
-        shortlist = match_options[:min(3, len(match_options))]
-        _, _, idx_b, team_b = rng.choice(shortlist)
-
-        remaining.pop(idx_b)
-        tables.append((team_a, team_b))
-
-    return tables
-
-
-def round_cost(tables, opp_counts, low, high):
-    cost = 0
-    for team1, team2 in tables:
-        cost += incremental_match_cost(team1, team2, opp_counts, low, high)
-    return cost
-
-
-def improve_round_layout(tables, opp_counts_before_round, low, high):
-    """
-    Local search:
-    For any two tables (A vs B) and (C vs D),
-    try the two alternate pairings and keep improvements.
-    """
-    tables = tables[:]
-    improved = True
-
-    while improved:
-        improved = False
-
-        for i in range(len(tables)):
-            for j in range(i + 1, len(tables)):
-                t1a, t1b = tables[i]
-                t2a, t2b = tables[j]
-
-                original = [tables[i], tables[j]]
-                original_cost = round_cost(original, opp_counts_before_round, low, high)
-
-                candidates = [
-                    [(t1a, t2a), (t1b, t2b)],
-                    [(t1a, t2b), (t1b, t2a)],
-                ]
-
-                best_local = original
-                best_local_cost = original_cost
-
-                for cand in candidates:
-                    cand_cost = round_cost(cand, opp_counts_before_round, low, high)
-                    if cand_cost < best_local_cost:
-                        best_local = cand
-                        best_local_cost = cand_cost
-
-                if best_local_cost < original_cost:
-                    tables[i], tables[j] = best_local[0], best_local[1]
-                    improved = True
-
-    return tables
-
-
-# =========================================================
-# Helpers: scoring / summaries
-# =========================================================
-
-def final_opponent_score(players, opp_counts, low, high, target):
-    vals = []
-    for i in range(len(players)):
-        for j in range(i + 1, len(players)):
-            a = players[i]
-            b = players[j]
-            vals.append(opp_counts[a][b])
-
-    min_count = min(vals)
-    max_count = max(vals)
-    spread = max_count - min_count
-    outside_band = sum(1 for v in vals if v < low or v > high)
-    band_penalty = sum(edge_penalty(v, low, high) for v in vals)
-    sse = sum((v - target) ** 2 for v in vals)
-
-    return (outside_band, band_penalty, sse, spread, max_count, min_count)
-
-
-def opponent_summary(players, schedule):
     counts = {p: {q: 0 for q in players if q != p} for p in players}
 
     for rnd in schedule:
@@ -374,7 +324,7 @@ def opponent_summary(players, schedule):
     return counts
 
 
-def opponent_balance_report(players, schedule):
+def opponent_balance_report(players: list[str], schedule: list[dict]) -> list[tuple[str, str, int]]:
     counts = opponent_summary(players, schedule)
     rows = []
 
@@ -387,114 +337,35 @@ def opponent_balance_report(players, schedule):
     return rows
 
 
-def partner_summary(players, schedule):
+def final_opponent_score_exact(
+    players: list[str], opp_counts: dict, target: float
+) -> tuple[float, float, int, int, int]:
     """
-    Count partnerships using the partner pair list,
-    including sit-out teams and not just played tables.
+    Score summary for the exact case.
+    Lower is better.
     """
-    counts = {p: {q: 0 for q in players if q != p} for p in players}
+    vals = []
+    for i in range(len(players)):
+        for j in range(i + 1, len(players)):
+            a = players[i]
+            b = players[j]
+            vals.append(opp_counts[a][b])
 
+    max_dev = max(abs(v - target) for v in vals)
+    sse = sum((v - target) ** 2 for v in vals)
+    spread = max(vals) - min(vals)
+    zeros = sum(1 for v in vals if v == 0)
+    above_target = sum(1 for v in vals if v > target)
+
+    return max_dev, sse, spread, zeros, above_target
+
+
+def count_sitouts(schedule: list[dict]) -> dict:
+    sit = {}
     for rnd in schedule:
-        for a, b in rnd["partner_pairs"]:
-            counts[a][b] += 1
-            counts[b][a] += 1
-
-    return counts
-
-
-# =========================================================
-# Main schedule builder
-# =========================================================
-
-def build_schedule(players: list[str], attempts: int = 80, seed: int = 42) -> list[dict]:
-    """
-    Scalable schedule builder for larger tournaments.
-
-    Hard rule:
-      - each player partners every other player exactly once
-
-    Soft rules:
-      - opponent counts as even as possible
-      - sit-outs as even as mathematically possible
-    """
-    partner_rounds = generate_partner_rounds(players)
-    opp_low, opp_high, opp_target = opponent_low_high(players, partner_rounds)
-
-    best_schedule = None
-    best_score = None
-
-    for attempt in range(attempts):
-        rng = random.Random(seed + attempt)
-
-        sit_targets, sit_low, sit_high, total_sit_slots = compute_sitout_targets(players, partner_rounds, rng)
-        opp_counts = make_empty_opp_counts(players)
-        sit_counts = {p: 0 for p in players}
-        schedule = []
-
-        for round_index, rnd in enumerate(partner_rounds, start=1):
-            teams = [tuple(pair) for pair in rnd["pairs"]]
-            bye = rnd["bye"]
-
-            sit_out_players = []
-            sit_out_team = None
-
-            # mandatory single-player bye (only when odd number of players)
-            if bye is not None:
-                sit_out_players.append(bye)
-                sit_counts[bye] += 1
-
-            # if odd number of partner-teams, one full team must sit
-            active_teams = teams[:]
-            if len(active_teams) % 2 == 1:
-                sit_out_team = choose_sitout_team(active_teams, sit_counts, sit_targets, rng)
-                active_teams.remove(sit_out_team)
-
-                for p in sit_out_team:
-                    sit_out_players.append(p)
-                    sit_counts[p] += 1
-
-            # build tables
-            tables = greedy_pair_tables(active_teams, opp_counts, opp_low, opp_high, rng)
-            tables = improve_round_layout(tables, opp_counts, opp_low, opp_high)
-
-            apply_tables_to_opp_counts(opp_counts, tables)
-
-            round_data = {
-                "round_number": round_index,
-                "partner_pairs": [list(pair) for pair in teams],
-                "bye": bye,
-                "sit_out_team": list(sit_out_team) if sit_out_team is not None else [],
-                "sit_out": sit_out_players,
-                "tables": []
-            }
-
-            for table_num, (team1, team2) in enumerate(tables, start=1):
-                round_data["tables"].append({
-                    "table": table_num,
-                    "team1": list(team1),
-                    "team2": list(team2)
-                })
-
-            schedule.append(round_data)
-
-        # final scoring
-        opp_score = final_opponent_score(players, opp_counts, opp_low, opp_high, opp_target)
-        sit_target_miss = sum(abs(sit_counts[p] - sit_targets[p]) for p in players)
-        sit_vals = [sit_counts[p] for p in players]
-        sit_spread = max(sit_vals) - min(sit_vals)
-
-        # prioritize exact best-possible sit-out balance first
-        score = (
-            sit_target_miss,
-            sit_spread,
-            *opp_score
-        )
-
-        if best_score is None or score < best_score:
-            best_score = score
-            best_schedule = schedule
-
-    return best_schedule
+        for p in rnd["sit_out"]:
+            sit[p] = sit.get(p, 0) + 1
+    return sit
 
 
 # =========================================================
@@ -509,18 +380,27 @@ def reset_tournament():
     st.session_state.error = ""
 
 
-def generate_tournament(names_text):
+def generate_tournament(names_text: str):
     players = normalize_names(names_text)
 
     if len(players) < 4:
         st.session_state.error = "You need at least 4 players."
+        st.session_state.generated = False
+        st.session_state.schedule = []
+        st.session_state.current_round = 0
         return
 
-    st.session_state.players = players
-    st.session_state.schedule = build_schedule(players)
-    st.session_state.current_round = 0
-    st.session_state.generated = True
-    st.session_state.error = ""
+    try:
+        st.session_state.players = players
+        st.session_state.schedule = build_schedule(players, time_limit_seconds=120)
+        st.session_state.current_round = 0
+        st.session_state.generated = True
+        st.session_state.error = ""
+    except Exception as e:
+        st.session_state.error = str(e)
+        st.session_state.generated = False
+        st.session_state.schedule = []
+        st.session_state.current_round = 0
 
 
 def next_round():
@@ -563,6 +443,11 @@ st.markdown(
     """
 Paste one player name per line, generate the tournament once, and use the round buttons
 to move through the schedule.
+
+This version uses an exact solver for **20 or fewer players** when exact equal opponent
+counts are mathematically possible. Valid exact player counts are:
+
+**4, 5, 8, 9, 12, 13, 16, 17, 20**
 """
 )
 
@@ -651,28 +536,26 @@ if st.session_state.generated and st.session_state.schedule:
         partner_counts = partner_summary(players, schedule)
         opp_counts = opponent_summary(players, schedule)
         opp_low, opp_high, opp_target = opponent_low_high(players, generate_partner_rounds(players))
-        opp_score = final_opponent_score(players, opp_counts, opp_low, opp_high, opp_target)
+        opp_score = final_opponent_score_exact(players, opp_counts, opp_target)
 
         sits = count_sitouts(schedule)
         sit_vals = [sits.get(p, 0) for p in players]
-        total_sit_slots = sum(sit_vals)
-        sit_low = total_sit_slots // len(players)
-        sit_high = math.ceil(total_sit_slots / len(players))
 
         st.write(f"Ideal average opponent count per pair: {opp_target:.4f}")
         st.write(f"Desired opponent band: {opp_low} to {opp_high}")
         st.write(
-            f"Pairs outside desired band: {opp_score[0]} | "
-            f"Band penalty: {opp_score[1]:.2f} | "
-            f"SSE from target: {opp_score[2]:.2f} | "
-            f"Spread: {opp_score[3]} | "
-            f"Max: {opp_score[4]} | Min: {opp_score[5]}"
+            f"Pairs outside desired band: "
+            f"{sum(1 for a, b in combinations(players, 2) if opp_counts[a][b] != opp_target)} | "
+            f"SSE from target: {opp_score[1]:.2f} | "
+            f"Spread: {opp_score[2]} | "
+            f"Max: {max(opp_counts[a][b] for a, b in combinations(players, 2))} | "
+            f"Min: {min(opp_counts[a][b] for a, b in combinations(players, 2))}"
         )
 
         st.markdown("**Sit-out balance**")
         st.write(
-            f"Total sit-out slots: {total_sit_slots} | "
-            f"Best possible sit-out range: {sit_low} to {sit_high}"
+            f"Total sit-out slots: {sum(sit_vals)} | "
+            f"Best possible sit-out range: {min(sit_vals)} to {max(sit_vals)}"
         )
         st.write(
             f"Actual sit-out minimum: {min(sit_vals)} | "
