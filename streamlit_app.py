@@ -552,6 +552,31 @@ if st.session_state.generated and st.session_state.schedule:
         rows = opponent_balance_report(st.session_state.players, schedule)
         for a, b, c in rows:
             st.write(f"{a} vs {b}: {c}")
+
+        with st.expander("Validation / stats"):
+            opp_counts = {
+                p: {q: 0 for q in st.session_state.players if q != p}
+                for p in st.session_state.players
+            }
+        
+            for rnd in schedule:
+                for t in rnd["tables"]:
+                    a, b = t["team1"]
+                    c, d = t["team2"]
+                    for x in (a, b):
+                        for y in (c, d):
+                            opp_counts[x][y] += 1
+                            opp_counts[y][x] += 1
+        
+            target = opponent_target(st.session_state.players, len(schedule))
+            score = final_opponent_score(st.session_state.players, opp_counts, target)
+        
+            st.write(f"Ideal opponent count per pair: {target}")
+            st.write(f"Best score: max deviation={score[0]}, squared error={score[1]}, spread={score[2]}")
+        
+            st.markdown("**Opponent counts by pair**")
+            for a, b, c in opponent_summary_from_counts(st.session_state.players, opp_counts):
+                st.write(f"{a} vs {b}: {c}")
     
         st.markdown("**Partner counts**")
         partner_issues = []
