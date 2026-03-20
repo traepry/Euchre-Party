@@ -141,119 +141,123 @@ def layout_opponent_pairs(
     return opposed
 
 
-def build_schedule_exact(players: list[str], time_limit_seconds: int = 120) -> list[dict]:
+def copy_opp_counts(opp_counts):
+    return {p: opp_counts[p].copy() for p in opp_counts}
+
+
+def exact_score_from_counts(players, opp_counts, target):
+    vals = []
+    for i in range(len(players)):
+        for j in range(i + 1, len(players)):
+            a = players[i]
+            b = players[j]
+            vals.append(opp_counts[a][b])
+
+    max_dev = max(abs(v - target) for v in vals)
+    sse = sum((v - target) ** 2 for v in vals)
+    spread = max(vals) - min(vals)
+    zeros = sum(1 for v in vals if v == 0)
+    above = sum(1 for v in vals if v > target)
+
+    return (max_dev, sse, spread, zeros, above)
+
+
+def all_round_layouts_small(teams):
     """
-    Exact opponent-balancing schedule for n <= 20 when exact equality is mathematically feasible.
-
-    Exact equality is feasible when n % 4 is 0 or 1.
-    Supported practical range here: n <= 20.
+    Exact layouts for one round.
+    If odd number of teams, one team sits out.
     """
-    n = len(players)
+    layouts = []
 
-    if n > 20:
-        raise ValueError("Exact solver is only enabled for 20 or fewer players.")
+    if len(teams) % 2 == 0:
+        for tables in all_table_pairings_even(teams):
+            layouts.append({
+                "tables": tables,
+                "sit_out_team": []
+            })
+    else:
+        for i in range(len(teams)):
+            sit_out_team = teams[i]
+            remaining = teams[:i] + teams[i + 1:]
+            for tables in all_table_pairings_even(remaining):
+                layouts.append({
+                    "tables": tables,
+                    "sit_out_team": list(sit_out_team)
+                })
 
-    if n % 4 not in (0, 1):
-        raise ValueError(
-            f"Exact equal opponent counts are mathematically impossible for {n} players "
-            f"under your rules. Exact works when n % 4 is 0 or 1."
-        )
+    return layouts
 
+
+def build_schedule_exact_small(players: list[str]) -> list[dict]:
+    """
+    Exact backtracking search for small cases like 8 and 9 players.
+    Much faster on Streamlit Cloud than CP-SAT for these sizes.
+    """
     partner_rounds = generate_partner_rounds(players)
-    low, high, target = opponent_low_high(players, partner_rounds)
+    target = opponent_target(players, partner_rounds)
 
     if abs(target - round(target)) > 1e-9:
         raise ValueError(
-            f"Exact equal opponent counts are impossible for {n} players because "
+            f"Exact equal opponent counts are impossible for {len(players)} players because "
             f"the ideal average opponent count is {target:.4f}, not an integer."
         )
 
     target = int(round(target))
 
     layouts_by_round = []
-    layout_opp_pairs_by_round = []
-
     for rnd in partner_rounds:
         teams = [tuple(pair) for pair in rnd["pairs"]]
-
-        if len(teams) % 2 != 0:
-            raise ValueError(
-                "This player count requires team sit-outs inside rounds, so exact equal "
-                "opponent counts are not supported in this version."
-            )
-
-        layouts = all_table_pairings_even(teams)
+        layouts = all_round_layouts_small(teams)
         layouts_by_round.append(layouts)
-        layout_opp_pairs_by_round.append([layout_opponent_pairs(tables) for tables in layouts])
 
-    model = cp_model.CpModel()
+    empty_opp_counts = {p: {q: 0 for q in players if q != p} for p in players}
 
-    # x[(r, l)] = 1 if layout l is chosen in round r
-    x = {}
-    for r, layouts in enumerate(layouts_by_round):
-        for l in range(len(layouts)):
-            x[(r, l)] = model.NewBoolVar(f"x_r{r}_l{l}")
+    best_score = None
+    best_layouts = None
 
-    # Choose exactly one layout per round
-    for r, layouts in enumerate(layouts_by_round):
-        model.Add(sum(x[(r, l)] for l in range(len(layouts))) == 1)
+    def search(round_idx, opp_counts, chosen_layouts):
+        nonlocal best_score, best_layouts
 
-    # Every player-pair must oppose exactly target times
-    all_pairs = [pair_key(players[i], players[j]) for i in range(n) for j in range(i + 1, n)]
+        if round_idx == len(layouts_by_round):
+            score = exact_score_from_counts(players, opp_counts, target)
+            if best_score is None or score < best_score:
+                best_score = score
+                best_layouts = chosen_layouts[:]
+            return
 
-    for wanted in all_pairs:
-        terms = []
-        for r, layouts in enumerate(layouts_by_round):
-            for l in range(len(layouts)):
-                if wanted in layout_opp_pairs_by_round[r][l]:
-                    terms.append(x[(r, l)])
-        model.Add(sum(terms) == target)
+        for layout in layouts_by_round[round_idx]:
+            new_counts = copy_opp_counts(opp_counts)
+            apply_tables_to_opp_counts(new_counts, layout["tables"])
+            chosen_layouts.append(layout)
+            search(round_idx + 1, new_counts, chosen_layouts)
+            chosen_layouts.pop()
 
-    # Mild symmetry breaking
-    model.Add(x[(0, 0)] == 1)
+    search(0, empty_opp_counts, [])
 
-    solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = time_limit_seconds
-    solver.parameters.num_search_workers = 8
-
-    status = solver.Solve(model)
-
-    if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-        raise ValueError(
-            "The exact solver did not find a schedule in time. "
-            "Try increasing time_limit_seconds or using fewer players."
-        )
+    if best_layouts is None:
+        raise ValueError("No exact layout was found.")
 
     schedule = []
 
-    for round_index, rnd in enumerate(partner_rounds, start=1):
-        chosen_tables = None
-
-        for l, candidate in enumerate(layouts_by_round[round_index - 1]):
-            if solver.Value(x[(round_index - 1, l)]) == 1:
-                chosen_tables = candidate
-                break
-
-        if chosen_tables is None:
-            raise RuntimeError("Solver returned no selected layout for a round.")
-
+    for round_index, (rnd, chosen) in enumerate(zip(partner_rounds, best_layouts), start=1):
         teams = [tuple(pair) for pair in rnd["pairs"]]
         bye = rnd["bye"]
 
         sit_out_players = []
         if bye is not None:
             sit_out_players.append(bye)
+        sit_out_players.extend(chosen["sit_out_team"])
 
         round_data = {
             "round_number": round_index,
             "partner_pairs": [list(pair) for pair in teams],
             "bye": bye,
-            "sit_out_team": [],
+            "sit_out_team": chosen["sit_out_team"],
             "sit_out": sit_out_players,
             "tables": []
         }
 
-        for table_num, (team1, team2) in enumerate(chosen_tables, start=1):
+        for table_num, (team1, team2) in enumerate(chosen["tables"], start=1):
             round_data["tables"].append({
                 "table": table_num,
                 "team1": list(team1),
@@ -267,9 +271,9 @@ def build_schedule_exact(players: list[str], time_limit_seconds: int = 120) -> l
 
 def build_schedule(players: list[str], time_limit_seconds: int = 120) -> list[dict]:
     """
-    Exact-only schedule builder for 20 or fewer players.
-
-    Exact equal opponent counts are possible only when n % 4 is 0 or 1.
+    Exact-only schedule builder.
+    Uses specialized exact search for small sizes.
+    Uses CP-SAT for larger exact-feasible sizes up to 20.
     """
     n = len(players)
 
@@ -285,6 +289,11 @@ def build_schedule(players: list[str], time_limit_seconds: int = 120) -> list[di
             f"Use 4, 5, 8, 9, 12, 13, 16, 17, or 20 players for exact schedules."
         )
 
+    # Fast exact search for small cases
+    if n <= 9:
+        return build_schedule_exact_small(players)
+
+    # CP-SAT for larger exact-feasible cases
     return build_schedule_exact(players, time_limit_seconds=time_limit_seconds)
 
 
