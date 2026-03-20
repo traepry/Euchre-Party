@@ -51,6 +51,121 @@ def generate_partner_rounds(players: list[str]) -> list[list[tuple[str, str]]]:
 
     return rounds
 
+from itertools import combinations
+import math
+
+
+def copy_opp_counts(opp_counts):
+    return {p: opp_counts[p].copy() for p in opp_counts}
+
+
+def all_table_pairings_even(teams):
+    """
+    Return all ways to pair an even number of teams into tables.
+    Example:
+      [T1,T2,T3,T4] ->
+      [
+        [(T1,T2),(T3,T4)],
+        [(T1,T3),(T2,T4)],
+        [(T1,T4),(T2,T3)]
+      ]
+    """
+    if not teams:
+        return [[]]
+
+    first = teams[0]
+    results = []
+    for i in range(1, len(teams)):
+        second = teams[i]
+        remaining = teams[1:i] + teams[i+1:]
+        for rest in all_table_pairings_even(remaining):
+            results.append([(first, second)] + rest)
+    return results
+
+
+def all_round_layouts(teams):
+    """
+    Returns all valid layouts for one round.
+    Output format:
+      [
+        {
+          "tables": [(teamA, teamB), ...],
+          "sit_out_teams": [teamX, ...]
+        },
+        ...
+      ]
+    """
+    layouts = []
+
+    if len(teams) % 2 == 0:
+        for tables in all_table_pairings_even(teams):
+            layouts.append({
+                "tables": tables,
+                "sit_out_teams": []
+            })
+    else:
+        for i in range(len(teams)):
+            sit_out = teams[i]
+            remaining = teams[:i] + teams[i+1:]
+            for tables in all_table_pairings_even(remaining):
+                layouts.append({
+                    "tables": tables,
+                    "sit_out_teams": [sit_out]
+                })
+
+    return layouts
+
+
+def apply_tables_to_opp_counts(opp_counts, tables):
+    for team1, team2 in tables:
+        a, b = team1
+        c, d = team2
+        for x in (a, b):
+            for y in (c, d):
+                opp_counts[x][y] += 1
+                opp_counts[y][x] += 1
+
+
+def opponent_target(players, schedule_round_count):
+    """
+    Compute the ideal average opponent count per player pair.
+    """
+    n = len(players)
+
+    total_opponent_pair_events = 0
+    for _ in range(schedule_round_count):
+        active_players = n if n % 2 == 0 else n - 1
+        table_count = active_players // 4
+        total_opponent_pair_events += table_count * 4
+
+    total_pairs = math.comb(n, 2)
+    return total_opponent_pair_events / total_pairs
+
+
+def final_opponent_score(players, opp_counts, target):
+    vals = []
+    for i in range(len(players)):
+        for j in range(i + 1, len(players)):
+            a = players[i]
+            b = players[j]
+            vals.append(opp_counts[a][b])
+
+    max_dev = max(abs(v - target) for v in vals)
+    sse = sum((v - target) ** 2 for v in vals)
+    spread = max(vals) - min(vals)
+
+    return (max_dev, sse, spread)
+
+
+def opponent_summary_from_counts(players, opp_counts):
+    rows = []
+    for i in range(len(players)):
+        for j in range(i + 1, len(players)):
+            a = players[i]
+            b = players[j]
+            rows.append((a, b, opp_counts[a][b]))
+    return rows
+
 
 def score_team_pair(team_a, team_b, opp_counts):
     """
@@ -163,31 +278,56 @@ def pair_teams_into_tables(teams, players, opp_counts):
 def build_schedule(players: list[str]) -> list[dict]:
     partner_rounds = generate_partner_rounds(players)
 
-    opp_counts = {
+    # Build team lists per round
+    round_teams = []
+    for partner_pairs in partner_rounds:
+        teams = [tuple(pair) for pair in partner_pairs]
+        round_teams.append(teams)
+
+    # Precompute all valid layouts for each round
+    layouts_by_round = [all_round_layouts(teams) for teams in round_teams]
+
+    # Opponent counts
+    empty_opp_counts = {
         p: {q: 0 for q in players if q != p}
         for p in players
     }
 
+    target = opponent_target(players, len(partner_rounds))
+
+    best_score = None
+    best_layouts = None
+
+    def search(round_idx, opp_counts, chosen_layouts):
+        nonlocal best_score, best_layouts
+
+        if round_idx == len(layouts_by_round):
+            score = final_opponent_score(players, opp_counts, target)
+            if best_score is None or score < best_score:
+                best_score = score
+                best_layouts = chosen_layouts[:]
+            return
+
+        # Try layouts for this round
+        for layout in layouts_by_round[round_idx]:
+            new_counts = copy_opp_counts(opp_counts)
+            apply_tables_to_opp_counts(new_counts, layout["tables"])
+            chosen_layouts.append(layout)
+            search(round_idx + 1, new_counts, chosen_layouts)
+            chosen_layouts.pop()
+
+    search(0, empty_opp_counts, [])
+
+    # Build final schedule output
     schedule = []
 
-    for round_index, partner_pairs in enumerate(partner_rounds, start=1):
-        teams = [tuple(pair) for pair in partner_pairs]
-
-        tables, sitting_out_teams = pair_teams_into_tables(teams, players, opp_counts)
-
-        # update opponent counts
-        for team1, team2 in tables:
-            a, b = team1
-            c, d = team2
-            for x in (a, b):
-                for y in (c, d):
-                    opp_counts[x][y] += 1
-                    opp_counts[y][x] += 1
-
+    for round_index, (partner_pairs, chosen) in enumerate(zip(partner_rounds, best_layouts), start=1):
         sit_out_players = []
-        for team in sitting_out_teams:
+
+        for team in chosen["sit_out_teams"]:
             sit_out_players.extend(team)
 
+        # Handle odd original player counts where one player had BYE in partner generation
         players_used = set()
         for a, b in partner_pairs:
             players_used.add(a)
@@ -202,7 +342,7 @@ def build_schedule(players: list[str]) -> list[dict]:
             "sit_out": sit_out_players
         }
 
-        for table_num, (team1, team2) in enumerate(tables, start=1):
+        for table_num, (team1, team2) in enumerate(chosen["tables"], start=1):
             round_data["tables"].append({
                 "table": table_num,
                 "team1": list(team1),
