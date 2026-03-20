@@ -68,61 +68,101 @@ def score_team_pair(team_a, team_b, opp_counts):
     )
 
 
-def pair_teams_into_tables(teams, opp_counts):
+def all_table_pairings(teams):
     """
-    Greedily pair teams into tables while trying to balance opponent counts.
-    If odd number of teams, one team sits out this round.
-    Returns:
-      tables: list of ((p1,p2), (p3,p4))
-      sitting_out_teams: list of teams not assigned a table
+    Generate all possible ways to pair teams into tables.
+    Returns a list of pairing layouts, where each layout is:
+      [ (team1, team2), (team3, team4), ... ]
+    If odd number of teams, one team must sit out, and all possibilities are considered.
     """
-    remaining = teams[:]
-    tables = []
-    sitting_out_teams = []
+    if not teams:
+        return [([], [])]  # (tables, sitting_out_teams)
 
-    # If odd number of teams, choose the team whose sit-out causes least harm.
-    if len(remaining) % 2 == 1:
-        best_idx = None
-        best_score = None
+    results = []
 
-        for i, team in enumerate(remaining):
-            # heuristic: sit out the team that has the largest accumulated opposition
-            # so less-balanced teams can rest without worsening the spread too much
-            t1, t2 = team
-            team_total = sum(opp_counts[t1].values()) + sum(opp_counts[t2].values())
-            if best_score is None or team_total > best_score:
-                best_score = team_total
-                best_idx = i
+    # odd number of teams -> try each possible sit-out team
+    if len(teams) % 2 == 1:
+        for i in range(len(teams)):
+            sit_out = [teams[i]]
+            remaining = teams[:i] + teams[i+1:]
+            for tables, _ in all_table_pairings(remaining):
+                results.append((tables, sit_out))
+        return results
 
-        sitting_out_teams.append(remaining.pop(best_idx))
+    # even number of teams
+    first = teams[0]
+    for i in range(1, len(teams)):
+        second = teams[i]
+        remaining = teams[1:i] + teams[i+1:]
+        for rest_tables, rest_sit_out in all_table_pairings(remaining):
+            results.append(([(first, second)] + rest_tables, rest_sit_out))
 
-    while remaining:
-        team_a = remaining.pop(0)
+    return results
 
-        best_j = None
-        best_score = None
+def evaluate_round_layout(players, tables, opp_counts):
+    """
+    Simulate applying this round's tables and return a fairness score.
+    Lower is better.
+    """
+    # copy current counts
+    simulated = {
+        p: opp_counts[p].copy()
+        for p in players
+    }
 
-        for j, team_b in enumerate(remaining):
-            s = score_team_pair(team_a, team_b, opp_counts)
-            if best_score is None or s < best_score:
-                best_score = s
-                best_j = j
+    # add this round's opponent matchups
+    for team1, team2 in tables:
+        a, b = team1
+        c, d = team2
 
-        team_b = remaining.pop(best_j)
-        tables.append((team_a, team_b))
+        for x in (a, b):
+            for y in (c, d):
+                simulated[x][y] += 1
+                simulated[y][x] += 1
 
-    return tables, sitting_out_teams
+    # collect unique pair counts
+    pair_counts = []
+    for i in range(len(players)):
+        for j in range(i + 1, len(players)):
+            p1 = players[i]
+            p2 = players[j]
+            pair_counts.append(simulated[p1][p2])
 
+    if not pair_counts:
+        return 0
+
+    max_count = max(pair_counts)
+    min_count = min(pair_counts)
+    spread = max_count - min_count
+    sum_squares = sum(x * x for x in pair_counts)
+
+    # weighted objective
+    return max_count * 1000 + spread * 100 + sum_squares
+
+def pair_teams_into_tables(teams, players, opp_counts):
+    """
+    Try all valid table layouts for this round and choose the one
+    that best balances opponent counts.
+    """
+    all_layouts = all_table_pairings(teams)
+
+    best_tables = None
+    best_sit_out = None
+    best_score = None
+
+    for tables, sit_out_teams in all_layouts:
+        score = evaluate_round_layout(players, tables, opp_counts)
+
+        if best_score is None or score < best_score:
+            best_score = score
+            best_tables = tables
+            best_sit_out = sit_out_teams
+
+    return best_tables, best_sit_out
 
 def build_schedule(players: list[str]) -> list[dict]:
-    """
-    Full schedule:
-    1) Build partner rounds so each pair occurs exactly once as teammates.
-    2) Inside each round, pair teams into tables to balance opponents.
-    """
     partner_rounds = generate_partner_rounds(players)
 
-    # Opposition count matrix
     opp_counts = {
         p: {q: 0 for q in players if q != p}
         for p in players
@@ -133,27 +173,21 @@ def build_schedule(players: list[str]) -> list[dict]:
     for round_index, partner_pairs in enumerate(partner_rounds, start=1):
         teams = [tuple(pair) for pair in partner_pairs]
 
-        tables, sitting_out_teams = pair_teams_into_tables(teams, opp_counts)
+        tables, sitting_out_teams = pair_teams_into_tables(teams, players, opp_counts)
 
-        # Update opponent counts
+        # update opponent counts
         for team1, team2 in tables:
             a, b = team1
             c, d = team2
-            opp_counts[a][c] += 1
-            opp_counts[a][d] += 1
-            opp_counts[b][c] += 1
-            opp_counts[b][d] += 1
-            opp_counts[c][a] += 1
-            opp_counts[d][a] += 1
-            opp_counts[c][b] += 1
-            opp_counts[d][b] += 1
+            for x in (a, b):
+                for y in (c, d):
+                    opp_counts[x][y] += 1
+                    opp_counts[y][x] += 1
 
-        # Collect sit-outs
         sit_out_players = []
         for team in sitting_out_teams:
             sit_out_players.extend(team)
 
-        # If original player count was odd, exactly one player sits out from partner generation
         players_used = set()
         for a, b in partner_pairs:
             players_used.add(a)
@@ -178,7 +212,6 @@ def build_schedule(players: list[str]) -> list[dict]:
         schedule.append(round_data)
 
     return schedule
-
 
 def partner_summary(players, schedule):
     """Count how many times each pair partnered."""
@@ -212,6 +245,18 @@ def opponent_summary(players, schedule):
                     counts[y][x] += 1
 
     return counts
+
+def opponent_balance_report(players, schedule):
+    counts = opponent_summary(players, schedule)
+    rows = []
+
+    for i in range(len(players)):
+        for j in range(i + 1, len(players)):
+            a = players[i]
+            b = players[j]
+            rows.append((a, b, counts[a][b]))
+
+    return rows
 
 
 def reset_tournament():
@@ -363,6 +408,11 @@ if st.session_state.generated and st.session_state.schedule:
         partner_counts = partner_summary(st.session_state.players, schedule)
         opp_counts = opponent_summary(st.session_state.players, schedule)
 
+        st.markdown("**Opponent counts by pair**")
+        rows = opponent_balance_report(st.session_state.players, schedule)
+        for a, b, c in rows:
+            st.write(f"{a} vs {b}: {c}")
+    
         st.markdown("**Partner counts**")
         partner_issues = []
         for a, b in combinations(st.session_state.players, 2):
