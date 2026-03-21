@@ -7,6 +7,16 @@ import streamlit as st
 
 st.set_page_config(page_title="Euchre Tournament Scheduler", layout="wide")
 
+def normalize_names(raw_text: str) -> list[str]:
+    seen = set()
+    names = []
+    for line in raw_text.splitlines():
+        name = line.strip()
+        if name and name not in seen:
+            seen.add(name)
+            names.append(name)
+    return names
+
 # =========================================================
 # STYLING
 # =========================================================
