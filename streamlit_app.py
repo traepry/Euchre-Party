@@ -1,5 +1,6 @@
 import math
 import random
+import html
 from itertools import combinations
 
 import streamlit as st
@@ -7,7 +8,7 @@ import streamlit as st
 st.set_page_config(page_title="Euchre Tournament Scheduler", layout="wide")
 
 # =========================================================
-# TV / PROJECTOR STYLING
+# STYLING
 # =========================================================
 
 st.markdown(
@@ -20,74 +21,112 @@ st.markdown(
         }
 
         .main-title {
-            font-size: 2.4rem;
-            font-weight: 700;
-            margin-bottom: 0.3rem;
+            font-size: 2.5rem;
+            font-weight: 800;
+            margin-bottom: 0.25rem;
         }
 
         .subtitle {
-            font-size: 1.1rem;
+            font-size: 1.08rem;
+            margin-bottom: 1rem;
+            line-height: 1.5;
+        }
+
+        .table-title {
+            font-size: 2rem;
+            font-weight: 800;
             margin-bottom: 1rem;
         }
 
-        .tv-card {
-            border: 2px solid #d9d9d9;
-            border-radius: 18px;
-            padding: 22px;
-            margin-bottom: 18px;
-            min-height: 220px;
-            background: white;
-        }
-
-        .tv-table-title {
-            font-size: 2.2rem;
-            font-weight: 800;
-            margin-bottom: 18px;
-        }
-
-        .tv-team-label {
-            font-size: 1.05rem;
+        .team-label {
+            font-size: 0.95rem;
             color: #666;
-            margin-bottom: 4px;
+            margin-bottom: 0.15rem;
         }
 
-        .tv-team-line {
-            font-size: 1.8rem;
+        .team-line {
+            font-size: 1.75rem;
             font-weight: 700;
-            line-height: 1.25;
-            margin-bottom: 18px;
+            line-height: 1.2;
+            margin-bottom: 0.65rem;
         }
 
-        .tv-sitout {
-            font-size: 1.5rem;
+        .winner-text {
+            font-size: 1rem;
+            font-weight: 700;
+            color: #0b6b34;
+            margin-top: 0.25rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .sitout-box {
+            font-size: 1.45rem;
             font-weight: 700;
             padding: 16px 18px;
             border-radius: 14px;
             background: #f4f0d2;
             color: #6b5300;
             margin-top: 8px;
-            margin-bottom: 12px;
-        }
-
-        .leaderboard-box {
-            border: 2px solid #d9d9d9;
-            border-radius: 18px;
-            padding: 16px 18px;
-            background: white;
-            margin-bottom: 16px;
+            margin-bottom: 14px;
         }
 
         .leaderboard-title {
-            font-size: 1.6rem;
+            font-size: 1.8rem;
             font-weight: 800;
-            margin-bottom: 8px;
+            margin-top: 0.8rem;
+            margin-bottom: 0.6rem;
         }
 
-        .round-controls-title {
-            font-size: 1.4rem;
+        .podium-card {
+            border: 2px solid #d9d9d9;
+            border-radius: 18px;
+            padding: 16px;
+            background: white;
+            text-align: center;
+            min-height: 130px;
+        }
+
+        .podium-place {
+            font-size: 1rem;
             font-weight: 700;
-            margin-top: 10px;
-            margin-bottom: 8px;
+            color: #555;
+            margin-bottom: 0.35rem;
+        }
+
+        .podium-name {
+            font-size: 1.4rem;
+            font-weight: 800;
+            line-height: 1.2;
+            margin-bottom: 0.35rem;
+        }
+
+        .podium-stat {
+            font-size: 1rem;
+            font-weight: 700;
+        }
+
+        .leaderboard-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 0.5rem;
+            margin-bottom: 1rem;
+        }
+
+        .leaderboard-table th, .leaderboard-table td {
+            border-bottom: 1px solid #e6e6e6;
+            padding: 10px 12px;
+            text-align: left;
+            font-size: 1rem;
+        }
+
+        .leaderboard-table th {
+            font-weight: 800;
+            background: #fafafa;
+        }
+
+        .leaderboard-top-row {
+            background: #fff6cc;
+            font-weight: 700;
         }
     </style>
     """,
@@ -95,21 +134,8 @@ st.markdown(
 )
 
 # =========================================================
-# PASTE YOUR EXISTING TEMPLATE BLOCK HERE
+# PRECOMPUTED EXACT TEMPLATES
 # =========================================================
-# Keep your current exact template constants exactly as they are:
-#
-# TEMPLATE_12 = ...
-# TEMPLATE_13 = ...
-# TEMPLATE_16 = ...
-# TEMPLATE_17 = ...
-# TEMPLATE_20 = ...
-# TEMPLATE_21 = ...
-# PRECOMPUTED_TEMPLATES = {...}
-#
-# ---------------------------------------------------------
-# START OF YOUR EXISTING TEMPLATE BLOCK
-# ---------------------------------------------------------
 
 TEMPLATE_12 = [
     [[12, 1], [9, 10], [2, 8], [3, 6], [4, 11], [5, 7]],
@@ -238,17 +264,6 @@ PRECOMPUTED_TEMPLATES = {
 # =========================================================
 # Template conversion / mapping
 # =========================================================
-
-def normalize_names(raw_text: str) -> list[str]:
-    seen = set()
-    names = []
-    for line in raw_text.splitlines():
-        name = line.strip()
-        if name and name not in seen:
-            seen.add(name)
-            names.append(name)
-    return names
-
 
 def map_num_to_name(x, players: list[str]) -> str:
     if isinstance(x, str):
@@ -644,38 +659,19 @@ def ensure_result_state_for_schedule(schedule: list[dict]) -> None:
         round_no = rnd["round_number"]
         st.session_state.saved_results.setdefault(round_no, {})
 
-        for table in rnd["tables"]:
-            key = f"winner_r{round_no}_t{table['table']}"
-            if key not in st.session_state:
-                st.session_state[key] = "No result"
+
+def get_table_result(round_no: int, table_no: int):
+    return st.session_state.saved_results.get(round_no, {}).get(table_no)
 
 
-def save_current_round_results() -> None:
-    if not st.session_state.schedule:
-        return
-
-    idx = st.session_state.current_round
-    rnd = st.session_state.schedule[idx]
-    round_no = rnd["round_number"]
-
+def toggle_table_winner(round_no: int, table_no: int, team_key: str):
     st.session_state.saved_results.setdefault(round_no, {})
+    current = st.session_state.saved_results[round_no].get(table_no)
 
-    for table in rnd["tables"]:
-        key = f"winner_r{round_no}_t{table['table']}"
-        selected = st.session_state.get(key, "No result")
-
-        if selected == "Team 1":
-            st.session_state.saved_results[round_no][table["table"]] = "team1"
-        elif selected == "Team 2":
-            st.session_state.saved_results[round_no][table["table"]] = "team2"
-        else:
-            st.session_state.saved_results[round_no].pop(table["table"], None)
-
-
-def save_and_next_round() -> None:
-    save_current_round_results()
-    if st.session_state.current_round < len(st.session_state.schedule) - 1:
-        st.session_state.current_round += 1
+    if current == team_key:
+        st.session_state.saved_results[round_no].pop(table_no, None)
+    else:
+        st.session_state.saved_results[round_no][table_no] = team_key
 
 
 def compute_leaderboard(players: list[str], schedule: list[dict], saved_results: dict) -> list[dict]:
@@ -706,11 +702,11 @@ def compute_leaderboard(players: list[str], schedule: list[dict], saved_results:
             for p in losers:
                 games_played[p] += 1
 
-    leaderboard = []
     sorted_players = sorted(players, key=lambda p: (-wins[p], games_played[p], str(p)))
-    for rank, player in enumerate(sorted_players, start=1):
+
+    leaderboard = []
+    for player in sorted_players:
         leaderboard.append({
-            "Rank": rank,
             "Player": player,
             "Wins": wins[player],
             "Games Played": games_played[player],
@@ -718,6 +714,66 @@ def compute_leaderboard(players: list[str], schedule: list[dict], saved_results:
         })
 
     return leaderboard
+
+
+def render_leaderboard(leaderboard: list[dict]) -> None:
+    st.markdown('<div class="leaderboard-title">Leaderboard</div>', unsafe_allow_html=True)
+
+    if not leaderboard:
+        st.info("No results have been entered yet.")
+        return
+
+    top_three = leaderboard[:3]
+    podium_cols = st.columns(3)
+
+    for i in range(3):
+        with podium_cols[i]:
+            if i < len(top_three):
+                row = top_three[i]
+                st.markdown(
+                    f"""
+                    <div class="podium-card">
+                        <div class="podium-place">Top {i+1}</div>
+                        <div class="podium-name">{html.escape(str(row["Player"]))}</div>
+                        <div class="podium-stat">{row["Wins"]} wins</div>
+                        <div class="podium-stat">{row["Games Played"]} games</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+    top_wins = leaderboard[0]["Wins"] if leaderboard else 0
+    rows_html = ""
+
+    for row in leaderboard:
+        row_class = "leaderboard-top-row" if row["Wins"] == top_wins and top_wins > 0 else ""
+        rows_html += f"""
+        <tr class="{row_class}">
+            <td>{html.escape(str(row["Player"]))}</td>
+            <td>{row["Wins"]}</td>
+            <td>{row["Games Played"]}</td>
+            <td>{row["Win %"]}</td>
+        </tr>
+        """
+
+    st.markdown(
+        f"""
+        <table class="leaderboard-table">
+            <thead>
+                <tr>
+                    <th>Player</th>
+                    <th>Wins</th>
+                    <th>Games Played</th>
+                    <th>Win %</th>
+                </tr>
+            </thead>
+            <tbody>
+                {rows_html}
+            </tbody>
+        </table>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 # =========================================================
@@ -857,8 +913,8 @@ st.markdown(
     """
     <div class="subtitle">
         <strong>Recommended player counts for a perfect bracket:</strong> 12, 13, 16, 17, 20, 21<br>
-        Other player counts from 4 to 21 can still use a <strong>best available bracket</strong> that
-        keeps partner assignments exact and balances opponents and sit-outs as evenly as possible.
+        Other player counts from 4 to 21 can still generate a <strong>best available bracket</strong>.
+        That version keeps partner assignments exact and aims to balance opponent counts and sit-outs as evenly as possible.
     </div>
     """,
     unsafe_allow_html=True,
@@ -924,17 +980,10 @@ if st.session_state.generated and st.session_state.schedule:
             "This screen is using a best-available bracket. Partner assignments remain exact, and the layout aims to keep opponent counts and sit-outs as balanced as possible."
         )
 
-    # Leaderboard
-    st.markdown('<div class="leaderboard-box">', unsafe_allow_html=True)
-    st.markdown('<div class="leaderboard-title">Leaderboard</div>', unsafe_allow_html=True)
-    st.table(leaderboard[:10])
-    st.markdown('</div>', unsafe_allow_html=True)
-
     st.subheader(f"Round {round_data['round_number']}")
 
-    # TV-friendly table cards
     tables = round_data["tables"]
-    cols_per_row = 2 if len(tables) >= 4 else 2
+    cols_per_row = 2 if len(tables) >= 2 else 1
 
     for row_start in range(0, len(tables), cols_per_row):
         row_tables = tables[row_start:row_start + cols_per_row]
@@ -942,52 +991,76 @@ if st.session_state.generated and st.session_state.schedule:
 
         for col, table in zip(cols, row_tables):
             with col:
-                st.markdown(
-                    f"""
-                    <div class="tv-card">
-                        <div class="tv-table-title">Table {table["table"]}</div>
-                        <div class="tv-team-label">Team 1</div>
-                        <div class="tv-team-line">{table["team1"][0]} + {table["team1"][1]}</div>
-                        <div class="tv-team-label">Team 2</div>
-                        <div class="tv-team-line">{table["team2"][0]} + {table["team2"][1]}</div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
+                round_no = round_data["round_number"]
+                table_no = table["table"]
+                result = get_table_result(round_no, table_no)
+
+                team1_selected = result == "team1"
+                team2_selected = result == "team2"
+
+                with st.container(border=True):
+                    st.markdown(
+                        f'<div class="table-title">Table {table_no}</div>',
+                        unsafe_allow_html=True,
+                    )
+
+                    st.markdown('<div class="team-label">Team 1</div>', unsafe_allow_html=True)
+                    st.markdown(
+                        f'<div class="team-line">{html.escape(str(table["team1"][0]))} + {html.escape(str(table["team1"][1]))}</div>',
+                        unsafe_allow_html=True,
+                    )
+                    if team1_selected:
+                        st.markdown('<div class="winner-text">Selected winner</div>', unsafe_allow_html=True)
+
+                    cbtn1, csp1 = st.columns([1.2, 2.8])
+                    with cbtn1:
+                        st.button(
+                            "✓ Winner" if team1_selected else "Select",
+                            key=f"btn_r{round_no}_t{table_no}_team1",
+                            type="primary" if team1_selected else "secondary",
+                            on_click=toggle_table_winner,
+                            args=(round_no, table_no, "team1"),
+                            use_container_width=True,
+                        )
+
+                    st.markdown('<div class="team-label">Team 2</div>', unsafe_allow_html=True)
+                    st.markdown(
+                        f'<div class="team-line">{html.escape(str(table["team2"][0]))} + {html.escape(str(table["team2"][1]))}</div>',
+                        unsafe_allow_html=True,
+                    )
+                    if team2_selected:
+                        st.markdown('<div class="winner-text">Selected winner</div>', unsafe_allow_html=True)
+
+                    cbtn2, csp2 = st.columns([1.2, 2.8])
+                    with cbtn2:
+                        st.button(
+                            "✓ Winner" if team2_selected else "Select",
+                            key=f"btn_r{round_no}_t{table_no}_team2",
+                            type="primary" if team2_selected else "secondary",
+                            on_click=toggle_table_winner,
+                            args=(round_no, table_no, "team2"),
+                            use_container_width=True,
+                        )
 
     if round_data["sit_out"]:
         st.markdown(
-            f'<div class="tv-sitout">Sitting out this round: {", ".join(map(str, round_data["sit_out"]))}</div>',
+            f'<div class="sitout-box">Sitting out this round: {", ".join(map(str, round_data["sit_out"]))}</div>',
             unsafe_allow_html=True,
         )
     else:
         st.success("No sit-outs this round.")
 
-    # Winner entry controls
-    st.markdown('<div class="round-controls-title">Round result entry</div>', unsafe_allow_html=True)
+    # Leaderboard under schedule
+    render_leaderboard(leaderboard)
 
-    control_cols = st.columns(2)
-    for i, table in enumerate(tables):
-        with control_cols[i % 2]:
-            key = f"winner_r{round_data['round_number']}_t{table['table']}"
-            st.radio(
-                f"Winner for Table {table['table']}",
-                options=["No result", "Team 1", "Team 2"],
-                key=key,
-                horizontal=True,
-                help=f"Team 1: {table['team1'][0]} + {table['team1'][1]} | Team 2: {table['team2'][0]} + {table['team2'][1]}",
-            )
-
-    nav1, nav2, nav3, nav4 = st.columns([1, 1.3, 1.3, 1])
+    nav1, nav2, nav3 = st.columns([1, 1, 1])
     with nav1:
         st.button("Previous Round", key="prev_round_btn", on_click=prev_round)
     with nav2:
-        st.button("Save Results", key="save_round_btn", on_click=save_current_round_results)
+        st.button("Next Round", key="next_round_btn", on_click=next_round)
     with nav3:
-        st.button("Save + Next Round", key="save_next_round_btn", on_click=save_and_next_round)
-    with nav4:
         if idx == len(schedule) - 1:
-            st.success("Final round")
+            st.success("Final round reached.")
 
     with st.expander("Validation / stats"):
         partner_counts = partner_summary(players, schedule)
