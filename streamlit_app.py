@@ -7,6 +7,10 @@ import streamlit as st
 
 st.set_page_config(page_title="Euchre Tournament Scheduler", layout="wide")
 
+# =========================================================
+# NORMALIZE INPUT
+# =========================================================
+
 def normalize_names(raw_text: str) -> list[str]:
     seen = set()
     names = []
@@ -16,6 +20,7 @@ def normalize_names(raw_text: str) -> list[str]:
             seen.add(name)
             names.append(name)
     return names
+
 
 # =========================================================
 # STYLING
@@ -1014,16 +1019,17 @@ if st.session_state.generated and st.session_state.schedule:
                         unsafe_allow_html=True,
                     )
 
-                    st.markdown('<div class="team-label">Team 1</div>', unsafe_allow_html=True)
-                    st.markdown(
-                        f'<div class="team-line">{html.escape(str(table["team1"][0]))} + {html.escape(str(table["team1"][1]))}</div>',
-                        unsafe_allow_html=True,
-                    )
-                    if team1_selected:
-                        st.markdown('<div class="winner-text">Selected winner</div>', unsafe_allow_html=True)
+                    team_col1, team_col2 = st.columns(2)
 
-                    cbtn1, csp1 = st.columns([1.2, 2.8])
-                    with cbtn1:
+                    with team_col1:
+                        st.markdown('<div class="team-label">Team 1</div>', unsafe_allow_html=True)
+                        st.markdown(
+                            f'<div class="team-line">{html.escape(str(table["team1"][0]))} + {html.escape(str(table["team1"][1]))}</div>',
+                            unsafe_allow_html=True,
+                        )
+                        if team1_selected:
+                            st.markdown('<div class="winner-text">Selected winner</div>', unsafe_allow_html=True)
+
                         st.button(
                             "✓ Winner" if team1_selected else "Select",
                             key=f"btn_r{round_no}_t{table_no}_team1",
@@ -1033,16 +1039,15 @@ if st.session_state.generated and st.session_state.schedule:
                             use_container_width=True,
                         )
 
-                    st.markdown('<div class="team-label">Team 2</div>', unsafe_allow_html=True)
-                    st.markdown(
-                        f'<div class="team-line">{html.escape(str(table["team2"][0]))} + {html.escape(str(table["team2"][1]))}</div>',
-                        unsafe_allow_html=True,
-                    )
-                    if team2_selected:
-                        st.markdown('<div class="winner-text">Selected winner</div>', unsafe_allow_html=True)
+                    with team_col2:
+                        st.markdown('<div class="team-label">Team 2</div>', unsafe_allow_html=True)
+                        st.markdown(
+                            f'<div class="team-line">{html.escape(str(table["team2"][0]))} + {html.escape(str(table["team2"][1]))}</div>',
+                            unsafe_allow_html=True,
+                        )
+                        if team2_selected:
+                            st.markdown('<div class="winner-text">Selected winner</div>', unsafe_allow_html=True)
 
-                    cbtn2, csp2 = st.columns([1.2, 2.8])
-                    with cbtn2:
                         st.button(
                             "✓ Winner" if team2_selected else "Select",
                             key=f"btn_r{round_no}_t{table_no}_team2",
@@ -1060,9 +1065,6 @@ if st.session_state.generated and st.session_state.schedule:
     else:
         st.success("No sit-outs this round.")
 
-    # Leaderboard under schedule
-    render_leaderboard(leaderboard)
-
     nav1, nav2, nav3 = st.columns([1, 1, 1])
     with nav1:
         st.button("Previous Round", key="prev_round_btn", on_click=prev_round)
@@ -1071,6 +1073,8 @@ if st.session_state.generated and st.session_state.schedule:
     with nav3:
         if idx == len(schedule) - 1:
             st.success("Final round reached.")
+
+    render_leaderboard(leaderboard)
 
     with st.expander("Validation / stats"):
         partner_counts = partner_summary(players, schedule)
