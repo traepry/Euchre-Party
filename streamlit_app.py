@@ -1,4 +1,5 @@
 import math
+import random
 from itertools import combinations
 
 import streamlit as st
@@ -6,29 +7,60 @@ import streamlit as st
 st.set_page_config(page_title="Euchre Tournament Scheduler", layout="wide")
 
 # =========================================================
-# PRECOMPUTED TEMPLATE FORMAT
+# PRECOMPUTED EXACT TEMPLATES
 # =========================================================
-# Each template is a list of rounds.
-# Each round is a list of partner-pairs, in table order:
-# [
-#   [[a,b], [c,d], [e,f], [g,h], ...],
-#   ...
-# ]
+# Template formats supported:
 #
-# Every 2 partner-pairs make one table:
-#   pair 1 vs pair 2
-#   pair 3 vs pair 4
-#   ...
+# 1) Simple round format:
+#    [
+#      [[a,b], [c,d], [e,f], [g,h], ...],
+#      ...
+#    ]
 #
-# For odd player counts like 17 or 21, include a "BYE" placeholder in the
-# templates if your external schedule source uses one, or store rounds in the
-# alternate dict format shown below in the placeholder notes.
+#    Every 2 partner-pairs make one table:
+#      pair 1 vs pair 2
+#      pair 3 vs pair 4
+#      ...
+#
+# 2) Dict round format (lets you store an explicit bye):
+#    [
+#      {
+#        "pairs": [[a,b], [c,d], ...],
+#        "bye": 17
+#      },
+#      ...
+#    ]
 
 
-# =========================================================
-# VERIFIED TEMPLATE: 16 PLAYERS
-# Source-derived exact whist schedule
-# =========================================================
+TEMPLATE_12 = [
+    [[12, 1], [9, 10], [2, 8], [3, 6], [4, 11], [5, 7]],
+    [[12, 2], [10, 11], [3, 9], [4, 7], [5, 1], [6, 8]],
+    [[12, 3], [11, 1], [4, 10], [5, 8], [6, 2], [7, 9]],
+    [[12, 4], [1, 2], [5, 11], [6, 9], [7, 3], [8, 10]],
+    [[12, 5], [2, 3], [6, 1], [7, 10], [8, 4], [9, 11]],
+    [[12, 6], [3, 4], [7, 2], [8, 11], [9, 5], [10, 1]],
+    [[12, 7], [4, 5], [8, 3], [9, 1], [10, 6], [11, 2]],
+    [[12, 8], [5, 6], [9, 4], [10, 2], [11, 7], [1, 3]],
+    [[12, 9], [6, 7], [10, 5], [11, 3], [1, 8], [2, 4]],
+    [[12, 10], [7, 8], [11, 6], [1, 4], [2, 9], [3, 5]],
+    [[12, 11], [8, 9], [1, 7], [2, 5], [3, 10], [4, 6]],
+]
+
+TEMPLATE_13 = [
+    {"pairs": [[5, 13], [11, 8], [2, 9], [4, 12], [6, 10], [7, 3]], "bye": 1},
+    {"pairs": [[2, 1], [7, 10], [4, 13], [6, 9], [11, 12], [3, 8]], "bye": 5},
+    {"pairs": [[4, 5], [3, 12], [6, 1], [11, 13], [7, 9], [8, 10]], "bye": 2},
+    {"pairs": [[6, 2], [8, 9], [11, 5], [7, 1], [3, 13], [10, 12]], "bye": 4},
+    {"pairs": [[11, 4], [10, 13], [7, 2], [3, 5], [8, 1], [12, 9]], "bye": 6},
+    {"pairs": [[7, 6], [12, 1], [3, 4], [8, 2], [10, 5], [9, 13]], "bye": 11},
+    {"pairs": [[3, 11], [9, 5], [8, 6], [10, 4], [12, 2], [13, 1]], "bye": 7},
+    {"pairs": [[8, 7], [13, 2], [10, 11], [12, 6], [9, 4], [1, 5]], "bye": 3},
+    {"pairs": [[10, 3], [1, 4], [12, 7], [9, 11], [13, 6], [5, 2]], "bye": 8},
+    {"pairs": [[12, 8], [5, 6], [9, 3], [13, 7], [1, 11], [2, 4]], "bye": 10},
+    {"pairs": [[9, 10], [2, 11], [13, 8], [1, 3], [5, 7], [4, 6]], "bye": 12},
+    {"pairs": [[13, 12], [4, 7], [1, 10], [5, 8], [2, 3], [6, 11]], "bye": 9},
+    {"pairs": [[1, 9], [6, 3], [5, 12], [2, 10], [4, 8], [11, 7]], "bye": 13},
+]
 
 TEMPLATE_16 = [
     [[16, 1], [9, 14], [2, 4], [5, 8], [3, 10], [12, 13], [6, 15], [7, 11]],
@@ -48,35 +80,77 @@ TEMPLATE_16 = [
     [[16, 15], [8, 13], [1, 3], [4, 7], [2, 9], [11, 12], [5, 14], [6, 10]],
 ]
 
-# =========================================================
-# PLACEHOLDERS YOU CAN REPLACE LATER
-# =========================================================
-# Replace None with your verified templates when ready.
-#
-# For 17 and 21 players, you can use one of two formats:
-#
-# FORMAT A (simple list format, if your source already omits the bye pair):
-# TEMPLATE_17 = [
-#   [[17,1], [2,3], [4,5], ...],   # even number of real partner pairs
-#   ...
-# ]
-#
-# FORMAT B (dict format if you want to explicitly store a bye):
-# TEMPLATE_17 = [
-#   {
-#     "pairs": [[a,b], [c,d], ...],
-#     "bye": 17
-#   },
-#   ...
-# ]
-#
-# The code below supports both formats.
+# 17 Players & 17 Rounds, converted from Ian Wakeling's A-Q schedule:
+# A=1, B=2, C=3, D=4, E=5, F=6, G=7, H=8, I=9, J=10, K=11, L=12, M=13, N=14, O=15, P=16, Q=17
+TEMPLATE_17 = [
+    {"pairs": [[2, 17], [14, 5], [4, 15], [6, 13], [10, 9], [16, 3], [11, 8], [12, 7]], "bye": 1},
+    {"pairs": [[3, 1], [15, 6], [5, 16], [7, 14], [11, 10], [17, 4], [12, 9], [13, 8]], "bye": 2},
+    {"pairs": [[4, 2], [16, 7], [6, 17], [8, 15], [12, 11], [1, 5], [13, 10], [14, 9]], "bye": 3},
+    {"pairs": [[5, 3], [17, 8], [7, 1], [9, 16], [13, 12], [2, 6], [14, 11], [15, 10]], "bye": 4},
+    {"pairs": [[6, 4], [1, 9], [8, 2], [10, 17], [14, 13], [3, 7], [15, 12], [16, 11]], "bye": 5},
+    {"pairs": [[7, 5], [2, 10], [9, 3], [11, 1], [15, 14], [4, 8], [16, 13], [17, 12]], "bye": 6},
+    {"pairs": [[8, 6], [3, 11], [10, 4], [12, 2], [16, 15], [5, 9], [17, 14], [1, 13]], "bye": 7},
+    {"pairs": [[9, 7], [4, 12], [11, 5], [13, 3], [17, 16], [6, 10], [1, 15], [2, 14]], "bye": 8},
+    {"pairs": [[10, 8], [5, 13], [12, 6], [14, 4], [1, 17], [7, 11], [2, 16], [3, 15]], "bye": 9},
+    {"pairs": [[11, 9], [6, 14], [13, 7], [15, 5], [2, 1], [8, 12], [3, 17], [4, 16]], "bye": 10},
+    {"pairs": [[12, 10], [7, 15], [14, 8], [16, 6], [3, 2], [9, 13], [4, 1], [5, 17]], "bye": 11},
+    {"pairs": [[13, 11], [8, 16], [15, 9], [17, 7], [4, 3], [10, 14], [5, 2], [6, 1]], "bye": 12},
+    {"pairs": [[14, 12], [9, 17], [16, 10], [1, 8], [5, 4], [11, 15], [6, 3], [7, 2]], "bye": 13},
+    {"pairs": [[15, 13], [10, 1], [17, 11], [2, 9], [6, 5], [12, 16], [7, 4], [8, 3]], "bye": 14},
+    {"pairs": [[16, 14], [11, 2], [1, 12], [3, 10], [7, 6], [13, 17], [8, 5], [9, 4]], "bye": 15},
+    {"pairs": [[17, 15], [12, 3], [2, 13], [4, 11], [8, 7], [14, 1], [9, 6], [10, 5]], "bye": 16},
+    {"pairs": [[1, 16], [13, 4], [3, 14], [5, 12], [9, 8], [15, 2], [10, 7], [11, 6]], "bye": 17},
+]
 
-TEMPLATE_17 = None
-TEMPLATE_20 = None
-TEMPLATE_21 = None
+TEMPLATE_20 = [
+    [[20, 1], [13, 18], [2, 19], [7, 15], [3, 16], [5, 6], [4, 11], [10, 14], [8, 17], [9, 12]],
+    [[20, 2], [14, 19], [3, 1], [8, 16], [4, 17], [6, 7], [5, 12], [11, 15], [9, 18], [10, 13]],
+    [[20, 3], [15, 1], [4, 2], [9, 17], [5, 18], [7, 8], [6, 13], [12, 16], [10, 19], [11, 14]],
+    [[20, 4], [16, 2], [5, 3], [10, 18], [6, 19], [8, 9], [7, 14], [13, 17], [11, 1], [12, 15]],
+    [[20, 5], [17, 3], [6, 4], [11, 19], [7, 1], [9, 10], [8, 15], [14, 18], [12, 2], [13, 16]],
+    [[20, 6], [18, 4], [7, 5], [12, 1], [8, 2], [10, 11], [9, 16], [15, 19], [13, 3], [14, 17]],
+    [[20, 7], [19, 5], [8, 6], [13, 2], [9, 3], [11, 12], [10, 17], [16, 1], [14, 4], [15, 18]],
+    [[20, 8], [1, 6], [9, 7], [14, 3], [10, 4], [12, 13], [11, 18], [17, 2], [15, 5], [16, 19]],
+    [[20, 9], [2, 7], [10, 8], [15, 4], [11, 5], [13, 14], [12, 19], [18, 3], [16, 6], [17, 1]],
+    [[20, 10], [3, 8], [11, 9], [16, 5], [12, 6], [14, 15], [13, 1], [19, 4], [17, 7], [18, 2]],
+    [[20, 11], [4, 9], [12, 10], [17, 6], [13, 7], [15, 16], [14, 2], [1, 5], [18, 8], [19, 3]],
+    [[20, 12], [5, 10], [13, 11], [18, 7], [14, 8], [16, 17], [15, 3], [2, 6], [19, 9], [1, 4]],
+    [[20, 13], [6, 11], [14, 12], [19, 8], [15, 9], [17, 18], [16, 4], [3, 7], [1, 10], [2, 5]],
+    [[20, 14], [7, 12], [15, 13], [1, 9], [16, 10], [18, 19], [17, 5], [4, 8], [2, 11], [3, 6]],
+    [[20, 15], [8, 13], [16, 14], [2, 10], [17, 11], [19, 1], [18, 6], [5, 9], [3, 12], [4, 7]],
+    [[20, 16], [9, 14], [17, 15], [3, 11], [18, 12], [1, 2], [19, 7], [6, 10], [4, 13], [5, 8]],
+    [[20, 17], [10, 15], [18, 16], [4, 12], [19, 13], [2, 3], [1, 8], [7, 11], [5, 14], [6, 9]],
+    [[20, 18], [11, 16], [19, 17], [5, 13], [1, 14], [3, 4], [2, 9], [8, 12], [6, 15], [7, 10]],
+    [[20, 19], [12, 17], [1, 18], [6, 14], [2, 15], [4, 5], [3, 10], [9, 13], [7, 16], [8, 11]],
+]
+
+TEMPLATE_21 = [
+    {"pairs": [[2,3],[13,16],[6,4],[7,19],[5,12],[8,21],[9,20],[14,18],[15,10],[11,17]], "bye": 1},
+    {"pairs": [[3,4],[14,17],[7,5],[8,20],[6,13],[9,1],[10,21],[15,19],[16,11],[12,18]], "bye": 2},
+    {"pairs": [[4,5],[15,18],[8,6],[9,21],[7,14],[10,2],[11,1],[16,20],[17,12],[13,19]], "bye": 3},
+    {"pairs": [[5,6],[16,19],[9,7],[10,1],[8,15],[11,3],[12,2],[17,21],[18,13],[14,20]], "bye": 4},
+    {"pairs": [[6,7],[17,20],[10,8],[11,2],[9,16],[12,4],[13,3],[18,1],[19,14],[15,21]], "bye": 5},
+    {"pairs": [[7,8],[18,21],[11,9],[12,3],[10,17],[13,5],[14,4],[19,2],[20,15],[16,1]], "bye": 6},
+    {"pairs": [[8,9],[19,1],[12,10],[13,4],[11,18],[14,6],[15,5],[20,3],[21,16],[17,2]], "bye": 7},
+    {"pairs": [[9,10],[20,2],[13,11],[14,5],[12,19],[15,7],[16,6],[21,4],[1,17],[18,3]], "bye": 8},
+    {"pairs": [[10,11],[21,3],[14,12],[15,6],[13,20],[16,8],[17,7],[1,5],[2,18],[19,4]], "bye": 9},
+    {"pairs": [[11,12],[1,4],[15,13],[16,7],[14,21],[17,9],[18,8],[2,6],[3,19],[20,5]], "bye": 10},
+    {"pairs": [[12,13],[2,5],[16,14],[17,8],[15,1],[18,10],[19,9],[3,7],[4,20],[21,6]], "bye": 11},
+    {"pairs": [[13,14],[3,6],[17,15],[18,9],[16,2],[19,11],[20,10],[4,8],[5,21],[1,7]], "bye": 12},
+    {"pairs": [[14,15],[4,7],[18,16],[19,10],[17,3],[20,12],[21,11],[5,9],[6,1],[2,8]], "bye": 13},
+    {"pairs": [[15,16],[5,8],[19,17],[20,11],[18,4],[21,13],[1,12],[6,10],[7,2],[3,9]], "bye": 14},
+    {"pairs": [[16,17],[6,9],[20,18],[21,12],[19,5],[1,14],[2,13],[7,11],[8,3],[4,10]], "bye": 15},
+    {"pairs": [[17,18],[7,10],[21,19],[1,13],[20,6],[2,15],[3,14],[8,12],[9,4],[5,11]], "bye": 16},
+    {"pairs": [[18,19],[8,11],[1,20],[2,14],[21,7],[3,16],[4,15],[9,13],[10,5],[6,12]], "bye": 17},
+    {"pairs": [[19,20],[9,12],[2,21],[3,15],[1,8],[4,17],[5,16],[10,14],[11,6],[7,13]], "bye": 18},
+    {"pairs": [[20,21],[10,13],[3,1],[4,16],[2,9],[5,18],[6,17],[11,15],[12,7],[8,14]], "bye": 19},
+    {"pairs": [[21,1],[11,14],[4,2],[5,17],[3,10],[6,19],[7,18],[12,16],[13,8],[9,15]], "bye": 20},
+    {"pairs": [[1,2],[12,15],[5,3],[6,18],[4,11],[7,20],[8,19],[13,17],[14,9],[10,16]], "bye": 21},
+]
 
 PRECOMPUTED_TEMPLATES = {
+    12: TEMPLATE_12,
+    13: TEMPLATE_13,
     16: TEMPLATE_16,
     17: TEMPLATE_17,
     20: TEMPLATE_20,
@@ -100,22 +174,12 @@ def normalize_names(raw_text: str) -> list[str]:
 
 
 def map_num_to_name(x, players: list[str]) -> str:
-    """
-    Maps 1-based template numbers to player names.
-    """
     if isinstance(x, str):
         return x
     return players[x - 1]
 
 
 def convert_round_from_template(round_template, players: list[str], round_number: int) -> dict:
-    """
-    Supports two round formats:
-    1) list of pairs:
-       [[1,2], [3,4], [5,6], [7,8]]
-    2) dict:
-       {"pairs": [[1,2], [3,4], ...], "bye": 17}
-    """
     if isinstance(round_template, dict):
         raw_pairs = round_template.get("pairs", [])
         bye = round_template.get("bye")
@@ -151,29 +215,344 @@ def convert_round_from_template(round_template, players: list[str], round_number
 
 def build_schedule_from_template(players: list[str]) -> list[dict]:
     n = len(players)
+    template = PRECOMPUTED_TEMPLATES.get(n)
 
-    if n in (18, 19):
-        raise ValueError(
-            f"A perfect schedule is not possible for {n} players under your rules. "
-            f"Supported perfect sizes here are 16, 17, 20, and 21."
-        )
-
-    if n not in PRECOMPUTED_TEMPLATES:
-        raise ValueError(
-            "This version is configured for 16, 17, 20, and 21 players only."
-        )
-
-    template = PRECOMPUTED_TEMPLATES[n]
     if template is None:
-        raise ValueError(
-            f"The precomputed template for {n} players is still a placeholder. "
-            f"Replace TEMPLATE_{n} in the file with your verified round list."
-        )
+        raise ValueError(f"The precomputed perfect template for {n} players is not loaded.")
 
     return [
         convert_round_from_template(round_template, players, i + 1)
         for i, round_template in enumerate(template)
     ]
+
+
+# =========================================================
+# Partner schedule (hard constraint for heuristic path)
+# =========================================================
+
+def generate_partner_rounds(players: list[str]) -> list[dict]:
+    arr = players[:]
+    ghost = None
+
+    if len(arr) % 2 == 1:
+        ghost = "__BYE__"
+        arr.append(ghost)
+
+    n = len(arr)
+    rounds = []
+
+    for _ in range(n - 1):
+        pairs = []
+        bye = None
+
+        for i in range(n // 2):
+            a = arr[i]
+            b = arr[n - 1 - i]
+
+            if ghost in (a, b):
+                bye = b if a == ghost else a
+            else:
+                pairs.append((a, b))
+
+        rounds.append({"pairs": pairs, "bye": bye})
+        arr = [arr[0]] + [arr[-1]] + arr[1:-1]
+
+    return rounds
+
+
+# =========================================================
+# Heuristic fallback
+# =========================================================
+
+def opponent_target(players: list[str], partner_rounds: list[dict]) -> float:
+    total_pairs = math.comb(len(players), 2)
+    total_opponent_pair_events = 0
+    for rnd in partner_rounds:
+        table_count = len(rnd["pairs"]) // 2
+        total_opponent_pair_events += table_count * 4
+    return total_opponent_pair_events / total_pairs
+
+
+def opponent_low_high(players: list[str], partner_rounds: list[dict]) -> tuple[int, int, float]:
+    target = opponent_target(players, partner_rounds)
+    return math.floor(target), math.ceil(target), target
+
+
+def make_empty_opp_counts(players: list[str]) -> dict:
+    return {p: {q: 0 for q in players if q != p} for p in players}
+
+
+def apply_tables_to_opp_counts(opp_counts: dict, tables: list) -> None:
+    for team1, team2 in tables:
+        a, b = team1
+        c, d = team2
+        for x in (a, b):
+            for y in (c, d):
+                opp_counts[x][y] += 1
+                opp_counts[y][x] += 1
+
+
+def edge_penalty(c: int, low: int, high: int) -> float:
+    if c < low:
+        return 1000 * (low - c) ** 2
+    if c > high:
+        return 3000 * (c - high) ** 2
+    mid = (low + high) / 2.0
+    return (c - mid) ** 2
+
+
+def incremental_match_cost(team_a, team_b, opp_counts, low, high):
+    a1, a2 = team_a
+    b1, b2 = team_b
+    cost = 0
+    for x in (a1, a2):
+        for y in (b1, b2):
+            before = opp_counts[x][y]
+            after = before + 1
+            cost += edge_penalty(after, low, high) - edge_penalty(before, low, high)
+    return cost
+
+
+def compute_sitout_targets(players: list[str], partner_rounds: list[dict], rng: random.Random):
+    n = len(players)
+    mandatory = {p: 0 for p in players}
+    total_slots = 0
+
+    for rnd in partner_rounds:
+        round_slots = 0
+        if rnd["bye"] is not None:
+            mandatory[rnd["bye"]] += 1
+            round_slots += 1
+        if len(rnd["pairs"]) % 2 == 1:
+            round_slots += 2
+        total_slots += round_slots
+
+    low = total_slots // n
+    high = low + (1 if total_slots % n else 0)
+    num_high = total_slots - low * n
+
+    targets = {p: low for p in players}
+    required_high = [p for p in players if mandatory[p] > low]
+    required_high = list(dict.fromkeys(required_high))
+
+    if len(required_high) > num_high:
+        for p in players:
+            targets[p] = max(low, mandatory[p])
+        return targets, low, high
+
+    chosen_high = set(required_high)
+    remaining = [p for p in players if p not in chosen_high]
+    rng.shuffle(remaining)
+
+    for p in remaining[:max(0, num_high - len(chosen_high))]:
+        chosen_high.add(p)
+
+    for p in chosen_high:
+        targets[p] = high
+
+    for p in players:
+        if targets[p] < mandatory[p]:
+            targets[p] = mandatory[p]
+
+    return targets, low, high
+
+
+def choose_sitout_team(teams, sit_counts, sit_targets, rng):
+    scored = []
+    for team in teams:
+        a, b = team
+        after_a = sit_counts[a] + 1
+        after_b = sit_counts[b] + 1
+
+        over_target = max(0, after_a - sit_targets[a]) + max(0, after_b - sit_targets[b])
+        remaining_deficit = max(0, sit_targets[a] - after_a) + max(0, sit_targets[b] - after_b)
+        current_total = sit_counts[a] + sit_counts[b]
+
+        scored.append((over_target, remaining_deficit, current_total, rng.random(), team))
+
+    scored.sort(key=lambda x: (x[0], x[1], x[2], x[3]))
+    shortlist = scored[:min(4, len(scored))]
+    return rng.choice(shortlist)[4]
+
+
+def greedy_pair_tables(teams, opp_counts, low, high, rng):
+    remaining = teams[:]
+    tables = []
+
+    while remaining:
+        team_scores = []
+        for i, team_a in enumerate(remaining):
+            costs = []
+            for j, team_b in enumerate(remaining):
+                if i == j:
+                    continue
+                costs.append(incremental_match_cost(team_a, team_b, opp_counts, low, high))
+            if costs:
+                team_scores.append((min(costs), rng.random(), i))
+
+        team_scores.sort(reverse=True)
+        _, _, idx_a = team_scores[0]
+        team_a = remaining.pop(idx_a)
+
+        match_options = []
+        for j, team_b in enumerate(remaining):
+            cost = incremental_match_cost(team_a, team_b, opp_counts, low, high)
+            match_options.append((cost, rng.random(), j, team_b))
+
+        match_options.sort(key=lambda x: (x[0], x[1]))
+        shortlist = match_options[:min(3, len(match_options))]
+        _, _, idx_b, team_b = rng.choice(shortlist)
+
+        remaining.pop(idx_b)
+        tables.append((team_a, team_b))
+
+    return tables
+
+
+def round_cost(tables, opp_counts, low, high):
+    cost = 0
+    for team1, team2 in tables:
+        cost += incremental_match_cost(team1, team2, opp_counts, low, high)
+    return cost
+
+
+def improve_round_layout(tables, opp_counts_before_round, low, high):
+    tables = tables[:]
+    improved = True
+
+    while improved:
+        improved = False
+        for i in range(len(tables)):
+            for j in range(i + 1, len(tables)):
+                t1a, t1b = tables[i]
+                t2a, t2b = tables[j]
+
+                original = [tables[i], tables[j]]
+                original_cost = round_cost(original, opp_counts_before_round, low, high)
+
+                candidates = [
+                    [(t1a, t2a), (t1b, t2b)],
+                    [(t1a, t2b), (t1b, t2a)],
+                ]
+
+                best_local = original
+                best_local_cost = original_cost
+
+                for cand in candidates:
+                    cand_cost = round_cost(cand, opp_counts_before_round, low, high)
+                    if cand_cost < best_local_cost:
+                        best_local = cand
+                        best_local_cost = cand_cost
+
+                if best_local_cost < original_cost:
+                    tables[i], tables[j] = best_local[0], best_local[1]
+                    improved = True
+
+    return tables
+
+
+def final_opponent_score(players: list[str], opp_counts: dict, low: int, high: int, target: float):
+    vals = []
+    for i in range(len(players)):
+        for j in range(i + 1, len(players)):
+            a = players[i]
+            b = players[j]
+            vals.append(opp_counts[a][b])
+
+    min_count = min(vals)
+    max_count = max(vals)
+    spread = max_count - min_count
+    outside_band = sum(1 for v in vals if v < low or v > high)
+    band_penalty = sum(edge_penalty(v, low, high) for v in vals)
+    sse = sum((v - target) ** 2 for v in vals)
+
+    return outside_band, band_penalty, sse, spread, max_count, min_count
+
+
+def build_schedule_heuristic(players: list[str], attempts: int = 120, seed: int = 42) -> list[dict]:
+    partner_rounds = generate_partner_rounds(players)
+    opp_low, opp_high, opp_target = opponent_low_high(players, partner_rounds)
+
+    best_schedule = None
+    best_score = None
+
+    for attempt in range(attempts):
+        rng = random.Random(seed + attempt)
+
+        sit_targets, _, _ = compute_sitout_targets(players, partner_rounds, rng)
+        opp_counts = make_empty_opp_counts(players)
+        sit_counts = {p: 0 for p in players}
+        schedule = []
+
+        for round_index, rnd in enumerate(partner_rounds, start=1):
+            teams = [tuple(pair) for pair in rnd["pairs"]]
+            bye = rnd["bye"]
+
+            sit_out_players = []
+            sit_out_team = None
+
+            if bye is not None:
+                sit_out_players.append(bye)
+                sit_counts[bye] += 1
+
+            active_teams = teams[:]
+            if len(active_teams) % 2 == 1:
+                sit_out_team = choose_sitout_team(active_teams, sit_counts, sit_targets, rng)
+                active_teams.remove(sit_out_team)
+                for p in sit_out_team:
+                    sit_out_players.append(p)
+                    sit_counts[p] += 1
+
+            tables = greedy_pair_tables(active_teams, opp_counts, opp_low, opp_high, rng)
+            tables = improve_round_layout(tables, opp_counts, opp_low, opp_high)
+            apply_tables_to_opp_counts(opp_counts, tables)
+
+            round_data = {
+                "round_number": round_index,
+                "partner_pairs": [list(pair) for pair in teams],
+                "bye": bye,
+                "sit_out_team": list(sit_out_team) if sit_out_team is not None else [],
+                "sit_out": sit_out_players,
+                "tables": [],
+            }
+
+            for table_num, (team1, team2) in enumerate(tables, start=1):
+                round_data["tables"].append({
+                    "table": table_num,
+                    "team1": list(team1),
+                    "team2": list(team2),
+                })
+
+            schedule.append(round_data)
+
+        opp_score = final_opponent_score(players, opp_counts, opp_low, opp_high, opp_target)
+        sit_vals = [sit_counts[p] for p in players]
+        sit_spread = max(sit_vals) - min(sit_vals)
+        sit_target_miss = sum(abs(sit_counts[p] - sit_targets[p]) for p in players)
+
+        score = (
+            sit_target_miss,
+            sit_spread,
+            *opp_score,
+        )
+
+        if best_score is None or score < best_score:
+            best_score = score
+            best_schedule = schedule
+
+    return best_schedule
+
+
+def build_schedule(players: list[str]) -> tuple[list[dict], str]:
+    n = len(players)
+
+    if n < 4 or n > 21:
+        raise ValueError("This version supports between 4 and 21 players.")
+
+    if n in PRECOMPUTED_TEMPLATES and PRECOMPUTED_TEMPLATES[n] is not None:
+        return build_schedule_from_template(players), "Perfect bracket"
+
+    return build_schedule_heuristic(players), "Best available bracket"
 
 
 # =========================================================
@@ -239,6 +618,7 @@ def reset_tournament():
     st.session_state.current_round = 0
     st.session_state.generated = False
     st.session_state.error = ""
+    st.session_state.schedule_mode = ""
 
 
 def generate_tournament(names_text: str):
@@ -249,19 +629,23 @@ def generate_tournament(names_text: str):
         st.session_state.generated = False
         st.session_state.schedule = []
         st.session_state.current_round = 0
+        st.session_state.schedule_mode = ""
         return
 
     try:
+        schedule, mode = build_schedule(players)
         st.session_state.players = players
-        st.session_state.schedule = build_schedule_from_template(players)
+        st.session_state.schedule = schedule
         st.session_state.current_round = 0
         st.session_state.generated = True
         st.session_state.error = ""
+        st.session_state.schedule_mode = mode
     except Exception as e:
         st.session_state.error = str(e)
         st.session_state.generated = False
         st.session_state.schedule = []
         st.session_state.current_round = 0
+        st.session_state.schedule_mode = ""
 
 
 def next_round():
@@ -280,18 +664,16 @@ def prev_round():
 
 if "players" not in st.session_state:
     st.session_state.players = []
-
 if "schedule" not in st.session_state:
     st.session_state.schedule = []
-
 if "current_round" not in st.session_state:
     st.session_state.current_round = 0
-
 if "generated" not in st.session_state:
     st.session_state.generated = False
-
 if "error" not in st.session_state:
     st.session_state.error = ""
+if "schedule_mode" not in st.session_state:
+    st.session_state.schedule_mode = ""
 
 
 # =========================================================
@@ -305,13 +687,12 @@ st.markdown(
 Paste one player name per line, generate the tournament once, and use the round buttons
 to move through the schedule.
 
-This version is template-backed for **perfect schedules** at:
-**16, 17, 20, and 21 players**
+**Recommended player counts for a perfect bracket:** 12, 13, 16, 17, 20, 21  
+These sizes use verified prebuilt schedules.
 
-Right now:
-- **16 players** is loaded
-- **17, 20, and 21** are placeholders you can replace later
-- **18 and 19** are intentionally rejected
+For any other player count from 4 to 21, you can still generate a **best available bracket**.
+That version keeps the “partner everyone once” structure and tries to make opponent counts
+and sit-outs as even as possible.
 """
 )
 
@@ -320,22 +701,22 @@ with st.expander("Enter player names", expanded=not st.session_state.generated):
         "One player per line",
         value="",
         height=220,
-        key="names_input"
+        key="names_input",
     )
 
     c1, c2 = st.columns([1, 1])
     with c1:
         st.button(
-            "Generate Tournament",
+            "Generate Bracket",
             key="generate_btn",
             on_click=generate_tournament,
-            args=(names_text,)
+            args=(names_text,),
         )
     with c2:
         st.button(
             "Reset",
             key="reset_btn",
-            on_click=reset_tournament
+            on_click=reset_tournament,
         )
 
 if st.session_state.error:
@@ -347,13 +728,21 @@ if st.session_state.generated and st.session_state.schedule:
     round_data = schedule[idx]
     players = st.session_state.players
 
-    top1, top2, top3 = st.columns([1, 1, 1])
+    top1, top2, top3, top4 = st.columns([1, 1, 1, 1])
     with top1:
         st.metric("Players", len(players))
     with top2:
         st.metric("Current Round", f"{idx + 1} / {len(schedule)}")
     with top3:
         st.metric("Tables This Round", len(round_data["tables"]))
+    with top4:
+        st.metric("Bracket Type", st.session_state.schedule_mode)
+
+    if len(players) not in (12, 13, 16, 17, 20, 21):
+        st.info(
+            "A perfect bracket is not loaded for this player count, so this schedule uses a "
+            "best-available layout that aims to balance opponents and sit-outs as much as possible."
+        )
 
     st.subheader(f"Round {round_data['round_number']}")
 
@@ -375,7 +764,7 @@ if st.session_state.generated and st.session_state.schedule:
     <p style="margin-bottom:0;"><strong>Team 2:</strong> {table["team2"][0]} + {table["team2"][1]}</p>
 </div>
 """,
-                        unsafe_allow_html=True
+                        unsafe_allow_html=True,
                     )
     else:
         st.info("No active tables in this round.")
@@ -393,8 +782,6 @@ if st.session_state.generated and st.session_state.schedule:
     with nav3:
         if idx == len(schedule) - 1:
             st.success("Final round reached.")
-        else:
-            st.write("")
 
     with st.expander("Validation / stats"):
         partner_counts = partner_summary(players, schedule)
@@ -406,7 +793,7 @@ if st.session_state.generated and st.session_state.schedule:
 
         outside = sum(
             1 for a, b in combinations(players, 2)
-            if opp_counts[a][b] != opp_target
+            if not (math.floor(opp_target) <= opp_counts[a][b] <= math.ceil(opp_target))
         )
         max_opp = max(opp_counts[a][b] for a, b in combinations(players, 2))
         min_opp = min(opp_counts[a][b] for a, b in combinations(players, 2))
