@@ -66,14 +66,6 @@ st.markdown(
             margin-bottom: 0.65rem;
         }
 
-        .score-text {
-            font-size: 0.95rem;
-            font-weight: 700;
-            color: #0b6b34;
-            margin-top: 0.25rem;
-            margin-bottom: 0.5rem;
-        }
-
         .sitout-box {
             font-size: 1.45rem;
             font-weight: 700;
@@ -761,38 +753,22 @@ def ensure_result_state_for_schedule(schedule: list[dict]) -> None:
     for rnd in schedule:
         round_no = rnd["round_number"]
         st.session_state.saved_results.setdefault(round_no, {})
+
         for table in rnd["tables"]:
             table_no = table["table"]
             st.session_state.saved_results[round_no].setdefault(
                 table_no,
-                {"team1": None, "team2": None}
+                {"team1": 0, "team2": 0}
             )
 
 
-def get_team_score(round_no: int, table_no: int, team_key: str):
+def get_team_score(round_no: int, table_no: int, team_key: str) -> int:
     return (
         st.session_state.saved_results
         .get(round_no, {})
         .get(table_no, {})
-        .get(team_key)
+        .get(team_key, 0)
     )
-
-
-def update_team_score(round_no: int, table_no: int, team_key: str, widget_key: str):
-    st.session_state.saved_results.setdefault(round_no, {})
-    st.session_state.saved_results[round_no].setdefault(table_no, {"team1": None, "team2": None})
-
-    raw_value = str(st.session_state.get(widget_key, "")).strip()
-
-    if raw_value == "":
-        st.session_state.saved_results[round_no][table_no][team_key] = None
-        return
-
-    try:
-        score = int(raw_value)
-        st.session_state.saved_results[round_no][table_no][team_key] = score
-    except ValueError:
-        pass
 
 
 def compute_leaderboard(players: list[str], schedule: list[dict], saved_results: dict) -> list[dict]:
@@ -806,20 +782,20 @@ def compute_leaderboard(players: list[str], schedule: list[dict], saved_results:
         for table in rnd["tables"]:
             table_no = table["table"]
             table_result = round_results.get(table_no, {})
-            team1_score = table_result.get("team1")
-            team2_score = table_result.get("team2")
+            team1_score = table_result.get("team1", 0)
+            team2_score = table_result.get("team2", 0)
 
             team1 = table["team1"]
             team2 = table["team2"]
 
-            if team1_score is not None:
-                for p in team1:
-                    total_points[p] += team1_score
+            for p in team1:
+                total_points[p] += team1_score
+                if team1_score > 0:
                     scored_games[p] += 1
 
-            if team2_score is not None:
-                for p in team2:
-                    total_points[p] += team2_score
+            for p in team2:
+                total_points[p] += team2_score
+                if team2_score > 0:
                     scored_games[p] += 1
 
     sorted_players = sorted(
@@ -960,9 +936,27 @@ def opponent_target_from_schedule(players: list[str], schedule: list[dict]) -> f
 # =========================================================
 
 def clear_score_widget_state():
-    keys_to_delete = [k for k in st.session_state.keys() if str(k).startswith("score_r")]
+    keys_to_delete = [
+        k for k in st.session_state.keys()
+        if str(k).startswith("score_r")
+    ]
     for k in keys_to_delete:
         del st.session_state[k]
+
+
+def sync_score_widgets_from_saved_results(schedule: list[dict]) -> None:
+    for rnd in schedule:
+        round_no = rnd["round_number"]
+        for table in rnd["tables"]:
+            table_no = table["table"]
+            key1 = f"score_r{round_no}_t{table_no}_team1"
+            key2 = f"score_r{round_no}_t{table_no}_team2"
+
+            saved_team1 = get_team_score(round_no, table_no, "team1")
+            saved_team2 = get_team_score(round_no, table_no, "team2")
+
+            st.session_state[key1] = saved_team1
+            st.session_state[key2] = saved_team2
 
 
 def reset_tournament():
@@ -1000,6 +994,7 @@ def generate_tournament(names_text: str):
         st.session_state.schedule_mode = mode
         st.session_state.saved_results = {}
         ensure_result_state_for_schedule(schedule)
+        sync_score_widgets_from_saved_results(schedule)
     except Exception as e:
         clear_score_widget_state()
         st.session_state.error = str(e)
@@ -1087,12 +1082,13 @@ if st.session_state.generated and st.session_state.schedule:
     idx = st.session_state.current_round
     round_data = schedule[idx]
     players = st.session_state.players
-    leaderboard = compute_leaderboard(players, schedule, st.session_state.saved_results)
+
+    current_leaderboard = compute_leaderboard(players, schedule, st.session_state.saved_results)
 
     current_leader_text = "—"
-    if leaderboard and leaderboard[0]["Points"] > 0:
-        top_points = leaderboard[0]["Points"]
-        top_names = [row["Player"] for row in leaderboard if row["Points"] == top_points]
+    if current_leaderboard and current_leaderboard[0]["Points"] > 0:
+        top_points = current_leaderboard[0]["Points"]
+        top_names = [row["Player"] for row in current_leaderboard if row["Points"] == top_points]
         current_leader_text = ", ".join(map(str, top_names[:3]))
         if len(top_names) > 3:
             current_leader_text += "..."
@@ -1148,14 +1144,16 @@ if st.session_state.generated and st.session_state.schedule:
 
                         widget_key_1 = f"score_r{round_no}_t{table_no}_team1"
 
-                        st.text_input(
+                        if widget_key_1 not in st.session_state:
+                            st.session_state[widget_key_1] = team1_saved
+
+                        score1 = st.number_input(
                             "Score",
+                            min_value=0,
+                            step=1,
                             key=widget_key_1,
-                            value="" if team1_saved is None else str(team1_saved),
-                            placeholder="Enter score",
-                            on_change=update_team_score,
-                            args=(round_no, table_no, "team1", widget_key_1),
                         )
+                        st.session_state.saved_results[round_no][table_no]["team1"] = int(score1)
 
                     with team_col2:
                         st.markdown('<div class="team-label">Team 2</div>', unsafe_allow_html=True)
@@ -1166,14 +1164,16 @@ if st.session_state.generated and st.session_state.schedule:
 
                         widget_key_2 = f"score_r{round_no}_t{table_no}_team2"
 
-                        st.text_input(
+                        if widget_key_2 not in st.session_state:
+                            st.session_state[widget_key_2] = team2_saved
+
+                        score2 = st.number_input(
                             "Score ",
+                            min_value=0,
+                            step=1,
                             key=widget_key_2,
-                            value="" if team2_saved is None else str(team2_saved),
-                            placeholder="Enter score",
-                            on_change=update_team_score,
-                            args=(round_no, table_no, "team2", widget_key_2),
                         )
+                        st.session_state.saved_results[round_no][table_no]["team2"] = int(score2)
 
     if round_data["sit_out"]:
         st.markdown(
@@ -1192,6 +1192,7 @@ if st.session_state.generated and st.session_state.schedule:
         if idx == len(schedule) - 1:
             st.success("Final round reached.")
 
+    leaderboard = compute_leaderboard(players, schedule, st.session_state.saved_results)
     render_leaderboard(leaderboard)
 
     with st.expander("Validation / stats"):
