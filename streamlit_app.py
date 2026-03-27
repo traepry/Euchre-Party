@@ -1014,9 +1014,7 @@ st.markdown('<div class="main-title">Euchre Tournament Scheduler</div>', unsafe_
 st.markdown(
     """
     <div class="subtitle">
-        <strong>Recommended player counts for a perfect bracket:</strong> 12, 13, 16, 17, 20, 21<br>
-        Other player counts from 4 to 21 can still generate a <strong>best available bracket</strong>.
-        That version keeps partner assignments exact and aims to balance opponent counts and sit-outs as evenly as possible.
+        <strong>Recommended player counts for a perfect bracket:</strong> 12 - 21<br>
     </div>
     """,
     unsafe_allow_html=True,
